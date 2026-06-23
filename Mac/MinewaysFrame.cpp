@@ -6,6 +6,7 @@
 #include <wx/filename.h>
 #include "MinewaysFrame.h"
 #include "MapPanel.h"
+#include "LocationDialog.h"
 
 // Win32 shims + project headers (stdafx.h routes to compat.h on non-WIN32)
 #include "stdafx.h"
@@ -114,6 +115,7 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_OPEN_WORLD,       MinewaysFrame::OnOpenWorld)
     EVT_MENU(ID_OPEN_FILE,        MinewaysFrame::OnOpenFile)
     EVT_MENU(ID_TEST_BLOCK_WORLD, MinewaysFrame::OnTestBlockWorld)
+    EVT_MENU(ID_GO_TO_LOCATION,   MinewaysFrame::OnGoToLocation)
     EVT_MENU(ID_EXPORT_OBJ,       MinewaysFrame::OnExportOBJ)
     EVT_MENU(wxID_EXIT,           MinewaysFrame::OnQuit)
     EVT_MENU(wxID_ABOUT,          MinewaysFrame::OnAbout)
@@ -242,6 +244,8 @@ void MinewaysFrame::BuildMenu()
 
     fileMenu->Append(ID_OPEN_FILE,  "Open level.dat or Schematic...\tCtrl+O",
                      "Open a level.dat or .schematic/.schem file");
+    fileMenu->Append(ID_GO_TO_LOCATION, "Go To Location...\tCtrl+G",
+                     "Jump map view to a specific X,Z coordinate");
     fileMenu->AppendSeparator();
     fileMenu->Append(ID_EXPORT_OBJ, "Export Model...\tCtrl+E",
                      "Export selected region to OBJ");
@@ -319,6 +323,17 @@ void MinewaysFrame::OnTestBlockWorld(wxCommandEvent&)
     }
     SetStatusText("Test Block World loaded", 0);
     if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnGoToLocation(wxCommandEvent&)
+{
+    setLocationData((int)gCurX, (int)gCurZ);
+    if (doLocation(this)) {
+        int x, z;
+        getLocationData(x, z);
+        gCurX = x; gCurZ = z;
+        if (m_mapPanel) m_mapPanel->RedrawMap();
+    }
 }
 
 void MinewaysFrame::OnWorldMenuItem(wxCommandEvent& e)

@@ -27,6 +27,7 @@ private:
     void OnOpenFile(wxCommandEvent&);
     void OnTestBlockWorld(wxCommandEvent&);
     void OnWorldMenuItem(wxCommandEvent&);  // dynamic world-list items
+    void OnGoToLocation(wxCommandEvent&);
     void OnExportOBJ(wxCommandEvent&);
     void OnQuit(wxCommandEvent&);
     // View menu
@@ -47,6 +48,7 @@ enum {
     ID_SLIDER_TOP,
     ID_SLIDER_BOT,
     // Dynamic world-list items occupy [ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE+MAX_WORLDS)
+    ID_GO_TO_LOCATION,
     ID_WORLD_ITEM_BASE = wxID_HIGHEST + 100,
     MAX_WORLDS         = 50,
 };

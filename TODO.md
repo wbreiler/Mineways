@@ -18,7 +18,7 @@ Items are roughly ordered by dependency (foundations first).
 - [x] Selection rectangle: right-click drag to set export region; draw highlight overlay on map
 - [x] Bottom slider: wire to `gTargetDepth` (export floor depth, not just displayed)
 - [x] Space bar → if selection active, snap bottom depth to minimum solid height (`GetMinimumSelectionHeight`)
-- [ ] Go To Location dialog (port `Win/Location.cpp`)
+- [x] Go To Location dialog (`Mac/LocationDialog.cpp` — Ctrl+G; replaces Win/Location.cpp)
 
 ## Export
 

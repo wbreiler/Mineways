@@ -41,6 +41,7 @@ CORE_SRCS := $(SRC_DIR)/blockInfo.cpp \
 GUI_SRCS  := MinewaysApp.cpp \
              MinewaysFrame.cpp \
              MapPanel.cpp \
+             LocationDialog.cpp \
              CullingStubs.cpp
 
 CORE_OBJS := $(patsubst $(SRC_DIR)/%.cpp, %.o, $(CORE_SRCS))
@@ -69,6 +70,9 @@ MinewaysFrame.o: MinewaysFrame.cpp
 	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
 MapPanel.o: MapPanel.cpp
+	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
+
+LocationDialog.o: LocationDialog.cpp
 	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
 CullingStubs.o: CullingStubs.cpp
