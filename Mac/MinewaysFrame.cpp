@@ -28,6 +28,10 @@ static double      gCurScale        = 1.0;
 static int         gCurDepth        = INIT_MAP_MAX_HEIGHT;
 static BOOL        gLoaded          = FALSE;
 static int         gHitsFound[4]    = {0,0,0,0};
+static int         gTargetDepth     = SEA_LEVEL;
+static BOOL        gHighlightOn     = FALSE;
+static int         gStartHiX        = 0;
+static int         gStartHiZ        = 0;
 static wchar_t     gSelectTerrainPathAndName[MAX_PATH_AND_FILE];
 static wchar_t     gSelectTerrainDir[MAX_PATH_AND_FILE];
 static wchar_t     gWorldPathDefault[MAX_PATH_AND_FILE];
@@ -37,6 +41,10 @@ static wchar_t     gPreferredSeparatorString[2] = { L'/', 0 };
 static unsigned char* gMapBits  = nullptr;
 static int            gMapWidth  = 0;
 static int            gMapHeight = 0;
+
+// Scanned world list (parallel to gWorlds in Win/Mineways.cpp)
+static wxString gWorldDirs[MAX_WORLDS];
+static int      gNumWorlds = 0;
 
 // The singleton frame (so MapPanel event handlers can reach it)
 MinewaysFrame* gFrame = nullptr;
@@ -72,12 +80,7 @@ void RedrawMapIntoBuffer()
             gMapWidth, gMapHeight, gCurScale,
             gMapBits, &gOptions, gHitsFound,
             progressCB, gMinecraftVersion, gVersionID);
-    // DrawMap writes BGR (Windows DIB convention); swap to RGB for wxImage
-    for (int i = 0; i < gMapWidth * gMapHeight * 4; i += 4) {
-        unsigned char tmp = gMapBits[i];
-        gMapBits[i]   = gMapBits[i+2];
-        gMapBits[i+2] = tmp;
-    }
+    // DrawMap writes R,G,B,0xFF per pixel — already correct for wxImage (no swap needed)
 }
 
 // Accessors used by MapPanel
@@ -88,10 +91,14 @@ BOOL    IsLoaded()    { return gLoaded; }
 unsigned char* GetMapBits()  { return gMapBits; }
 int     GetMapWidth()        { return gMapWidth; }
 int     GetMapHeight()       { return gMapHeight; }
-const Options*    GetOptions()    { return &gOptions; }
-const WorldGuide* GetWorldGuide() { return &gWorldGuide; }
 int     GetMinHeight()  { return gMinHeight; }
 int     GetMaxHeight()  { return gMaxHeight; }
+int&    GetTargetDepth() { return gTargetDepth; }
+BOOL&   GetHighlightOn() { return gHighlightOn; }
+int&    GetStartHiX()    { return gStartHiX; }
+int&    GetStartHiZ()    { return gStartHiZ; }
+Options*    GetOptions()    { return &gOptions; }
+WorldGuide* GetWorldGuide() { return &gWorldGuide; }
 
 // IDBlock wrapper (for status bar lookup)
 const char* QueryBlock(int bx, int by, int* mx, int* my, int* mz, int* type, int* dataVal, int* biome)
@@ -104,13 +111,16 @@ const char* QueryBlock(int bx, int by, int* mx, int* my, int* mz, int* type, int
 
 // ─── MinewaysFrame ────────────────────────────────────────────────────────────
 wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
-    EVT_MENU(ID_OPEN_WORLD,  MinewaysFrame::OnOpenWorld)
-    EVT_MENU(ID_OPEN_FILE,   MinewaysFrame::OnOpenFile)
-    EVT_MENU(ID_EXPORT_OBJ,  MinewaysFrame::OnExportOBJ)
-    EVT_MENU(wxID_EXIT,      MinewaysFrame::OnQuit)
-    EVT_MENU(wxID_ABOUT,     MinewaysFrame::OnAbout)
-    EVT_SLIDER(ID_SLIDER_TOP, MinewaysFrame::OnSliderTop)
-    EVT_SLIDER(ID_SLIDER_BOT, MinewaysFrame::OnSliderBot)
+    EVT_MENU(ID_OPEN_WORLD,       MinewaysFrame::OnOpenWorld)
+    EVT_MENU(ID_OPEN_FILE,        MinewaysFrame::OnOpenFile)
+    EVT_MENU(ID_TEST_BLOCK_WORLD, MinewaysFrame::OnTestBlockWorld)
+    EVT_MENU(ID_EXPORT_OBJ,       MinewaysFrame::OnExportOBJ)
+    EVT_MENU(wxID_EXIT,           MinewaysFrame::OnQuit)
+    EVT_MENU(wxID_ABOUT,          MinewaysFrame::OnAbout)
+    EVT_SLIDER(ID_SLIDER_TOP,     MinewaysFrame::OnSliderTop)
+    EVT_SLIDER(ID_SLIDER_BOT,     MinewaysFrame::OnSliderBot)
+    EVT_MENU_RANGE(ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE + MAX_WORLDS - 1,
+                   MinewaysFrame::OnWorldMenuItem)
 wxEND_EVENT_TABLE()
 
 MinewaysFrame::MinewaysFrame(wxWindow* parent)
@@ -186,14 +196,51 @@ MinewaysFrame::~MinewaysFrame()
     gMapBits = nullptr;
 }
 
+// Scan the saves directory and populate gWorldDirs[].
+// Returns the number of worlds found.
+static int ScanWorldSaves(const wxString& savesDir)
+{
+    gNumWorlds = 0;
+    char path[4096];
+    strncpy(path, savesDir.utf8_str(), sizeof(path) - 1); path[sizeof(path)-1] = '\0';
+    DIR* d = opendir(path);
+    if (!d) return 0;
+    struct dirent* de;
+    while ((de = readdir(d)) != nullptr && gNumWorlds < MAX_WORLDS) {
+        if (de->d_name[0] == '.') continue;         // skip . / .. / hidden
+        wxString entry = savesDir + "/" + de->d_name;
+        // A valid world directory contains level.dat
+        if (wxFileExists(entry + "/level.dat"))
+            gWorldDirs[gNumWorlds++] = entry;
+    }
+    closedir(d);
+    return gNumWorlds;
+}
+
 void MinewaysFrame::BuildMenu()
 {
+    // Scan worlds before building menu so world submenu is populated
+    char defPath[4096]; wcstombs(defPath, gWorldPathDefault, sizeof(defPath));
+    ScanWorldSaves(wxString::FromUTF8(defPath));
+
     wxMenuBar* mb = new wxMenuBar;
 
     wxMenu* fileMenu = new wxMenu;
-    fileMenu->Append(ID_OPEN_WORLD, "Open World...\tCtrl+O",
-                     "Open a Minecraft world saves folder");
-    fileMenu->Append(ID_OPEN_FILE,  "Open level.dat or Schematic...",
+
+    // World list submenu
+    wxMenu* worldsMenu = new wxMenu;
+    worldsMenu->Append(ID_TEST_BLOCK_WORLD, "Test Block World",
+                       "Built-in test world showing all block types");
+    if (gNumWorlds > 0) {
+        worldsMenu->AppendSeparator();
+        for (int i = 0; i < gNumWorlds; i++) {
+            wxString name = wxFileName(gWorldDirs[i]).GetFullName();
+            worldsMenu->Append(ID_WORLD_ITEM_BASE + i, name);
+        }
+    }
+    fileMenu->AppendSubMenu(worldsMenu, "Open World");
+
+    fileMenu->Append(ID_OPEN_FILE,  "Open level.dat or Schematic...\tCtrl+O",
                      "Open a level.dat or .schematic/.schem file");
     fileMenu->AppendSeparator();
     fileMenu->Append(ID_EXPORT_OBJ, "Export Model...\tCtrl+E",
@@ -218,6 +265,14 @@ void MinewaysFrame::OnMapPanelSize(int w, int h)
     if (gMapBits) memset(gMapBits, 0xff, (size_t)w * h * 4);
 }
 
+void MinewaysFrame::UpdateBottomSlider(int depth)
+{
+    if (m_sliderBot) {
+        m_sliderBot->SetValue(depth);
+        m_labelBot->SetLabel(wxString::Format("%d", depth));
+    }
+}
+
 void MinewaysFrame::UpdateStatusBar(int mx, int mz, int my,
                                     const char* label, int /*type*/, int /*dataVal*/, int /*biome*/)
 {
@@ -230,6 +285,7 @@ void MinewaysFrame::UpdateStatusBar(int mx, int mz, int my,
 // ─── Menu handlers ────────────────────────────────────────────────────────────
 void MinewaysFrame::OnOpenWorld(wxCommandEvent&)
 {
+    // Fallback: manual directory browse (used if the saves scan found nothing)
     char defPath[4096] = "";
     wcstombs(defPath, gWorldPathDefault, sizeof(defPath));
     wxDirDialog dlg(this, "Select a Minecraft world folder",
@@ -237,6 +293,39 @@ void MinewaysFrame::OnOpenWorld(wxCommandEvent&)
                     wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
     if (dlg.ShowModal() != wxID_OK) return;
     LoadWorldFromDir(dlg.GetPath());
+}
+
+void MinewaysFrame::OnTestBlockWorld(wxCommandEvent&)
+{
+    gWorldGuide.type  = WORLD_TEST_BLOCK_TYPE;
+    gWorldGuide.world[0] = 0;
+    gVersionID        = 3953;   // current data version
+    gMinecraftVersion = DATA_VERSION_TO_RELEASE_NUMBER(gVersionID);
+    gMinHeight        = ZERO_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
+    gMaxHeight        = MAX_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
+    gCurX = gCurZ     = 0.0;
+    gCurScale         = 1.0;
+    gCurDepth         = gMaxHeight;
+    gLoaded           = TRUE;
+
+    SetTitle("Mineways — Test Block World");
+    if (m_sliderTop) {
+        m_sliderTop->SetRange(gMinHeight, gMaxHeight);
+        m_sliderTop->SetValue(gCurDepth);
+        m_labelTop->SetLabel(wxString::Format("%d", gCurDepth));
+        m_sliderBot->SetRange(gMinHeight, gMaxHeight);
+        m_sliderBot->SetValue(gMinHeight);
+        m_labelBot->SetLabel(wxString::Format("%d", gMinHeight));
+    }
+    SetStatusText("Test Block World loaded", 0);
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnWorldMenuItem(wxCommandEvent& e)
+{
+    int idx = e.GetId() - ID_WORLD_ITEM_BASE;
+    if (idx < 0 || idx >= gNumWorlds) return;
+    LoadWorldFromDir(gWorldDirs[idx]);
 }
 
 void MinewaysFrame::OnOpenFile(wxCommandEvent&)
@@ -286,9 +375,9 @@ void MinewaysFrame::OnSliderTop(wxCommandEvent&)
 
 void MinewaysFrame::OnSliderBot(wxCommandEvent&)
 {
-    m_labelBot->SetLabel(wxString::Format("%d", m_sliderBot->GetValue()));
-    // bottom depth affects export selection, not map display — just redraw
-    if (m_mapPanel) m_mapPanel->RedrawMap();
+    gTargetDepth = m_sliderBot->GetValue();
+    m_labelBot->SetLabel(wxString::Format("%d", gTargetDepth));
+    // bottom depth affects export bounds; map display uses gCurDepth (top slider)
 }
 
 // ─── World loading ────────────────────────────────────────────────────────────

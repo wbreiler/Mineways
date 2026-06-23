@@ -9,6 +9,7 @@ public:
 
     // Called by MapPanel mouse handlers (shared state lives here)
     void UpdateStatusBar(int mx, int mz, int my, const char* label, int type, int dataVal, int biome);
+    void UpdateBottomSlider(int depth);
     void OnMapPanelSize(int w, int h);
 
 private:
@@ -24,6 +25,8 @@ private:
     // File menu
     void OnOpenWorld(wxCommandEvent&);
     void OnOpenFile(wxCommandEvent&);
+    void OnTestBlockWorld(wxCommandEvent&);
+    void OnWorldMenuItem(wxCommandEvent&);  // dynamic world-list items
     void OnExportOBJ(wxCommandEvent&);
     void OnQuit(wxCommandEvent&);
     // View menu
@@ -37,9 +40,13 @@ private:
 
 // IDs
 enum {
-    ID_OPEN_WORLD  = wxID_HIGHEST + 1,
+    ID_OPEN_WORLD      = wxID_HIGHEST + 1,
     ID_OPEN_FILE,
+    ID_TEST_BLOCK_WORLD,
     ID_EXPORT_OBJ,
     ID_SLIDER_TOP,
     ID_SLIDER_BOT,
+    // Dynamic world-list items occupy [ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE+MAX_WORLDS)
+    ID_WORLD_ITEM_BASE = wxID_HIGHEST + 100,
+    MAX_WORLDS         = 50,
 };

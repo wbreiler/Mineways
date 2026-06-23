@@ -12,13 +12,15 @@ public:
     void ResizeBuffer(int w, int h);
 
 private:
-    unsigned char* m_bits = nullptr;
     int m_w = 0, m_h = 0;
 
-    // drag state
+    // left-drag (pan) state
     bool   m_dragging = false;
     double m_dragStartCX = 0, m_dragStartCZ = 0;
     wxPoint m_dragStart{0,0};
+
+    // right-drag (selection) state
+    bool   m_selecting = false;
 
     void OnPaint(wxPaintEvent&);
     void OnSize(wxSizeEvent&);
@@ -26,6 +28,7 @@ private:
     void OnLeftUp(wxMouseEvent&);
     void OnMouseMove(wxMouseEvent&);
     void OnRightDown(wxMouseEvent&);
+    void OnRightUp(wxMouseEvent&);
     void OnMouseWheel(wxMouseEvent&);
     void OnKeyDown(wxKeyEvent&);
 
