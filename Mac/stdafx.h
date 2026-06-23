@@ -5,6 +5,14 @@
 // Must come first — defines HANDLE, Windows types, wide-path helpers
 #include "compat.h"
 
+// Project headers (found via -I../Win in the Makefile)
+#include "cache.h"
+#include "MinewaysMap.h"
+#include "ObjFileManip.h"
+#include "nbt.h"
+#include "region.h"
+#include "terrainExtData.h"
+
 // Standard C/C++ headers
 #include <stdlib.h>
 #include <memory.h>

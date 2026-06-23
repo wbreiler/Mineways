@@ -272,6 +272,94 @@ static inline FILE* _mwPortaCreateW(const wchar_t* wpath)
     return fopen(path, "wb");
 }
 
+// ── Win32 directory enumeration (POSIX opendir/readdir/fnmatch backend) ───────
+#include <dirent.h>
+#include <fnmatch.h>
+
+#define INVALID_FILE_ATTRIBUTES ((DWORD)0xFFFFFFFF)
+#define FILE_ATTRIBUTE_DIRECTORY 0x00000010
+#define FILE_ATTRIBUTE_NORMAL    0x00000080
+#define _TRUNCATE                ((size_t)-1)
+
+static inline DWORD GetFileAttributesW(const wchar_t* wpath)
+{
+    char path[4096]; wcstombs(path, wpath, sizeof(path));
+    struct stat st;
+    if (stat(path, &st) != 0) return INVALID_FILE_ATTRIBUTES;
+    return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+}
+
+typedef struct _WIN32_FIND_DATAW {
+    DWORD   dwFileAttributes;
+    wchar_t cFileName[MAX_PATH];
+} WIN32_FIND_DATA;
+
+struct _mwFindHandle {
+    DIR*  dir;
+    char  pattern[256];
+    char  dirPath[4096];
+};
+
+static inline bool _mwFindMatch(struct dirent* de, struct _mwFindHandle* fh,
+                                WIN32_FIND_DATA* ffd)
+{
+    if (fnmatch(fh->pattern, de->d_name, FNM_CASEFOLD) != 0) return false;
+    mbstowcs(ffd->cFileName, de->d_name, MAX_PATH);
+    char full[4096 + 256];
+    snprintf(full, sizeof(full), "%s/%s", fh->dirPath, de->d_name);
+    struct stat st;
+    ffd->dwFileAttributes = (stat(full, &st) == 0 && S_ISDIR(st.st_mode))
+                            ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    return true;
+}
+
+static inline HANDLE FindFirstFileW(const wchar_t* wpattern, WIN32_FIND_DATA* ffd)
+{
+    char pat[4096]; wcstombs(pat, wpattern, sizeof(pat));
+    char* slash = strrchr(pat, '/');
+    if (!slash) slash = strrchr(pat, '\\');
+    char dirPath[4096], filePat[256];
+    if (slash) {
+        size_t n = (size_t)(slash - pat);
+        strncpy(dirPath, pat, n); dirPath[n] = '\0';
+        strncpy(filePat, slash + 1, sizeof(filePat) - 1); filePat[sizeof(filePat)-1] = '\0';
+    } else {
+        strcpy(dirPath, "."); strncpy(filePat, pat, sizeof(filePat)-1); filePat[sizeof(filePat)-1]='\0';
+    }
+    DIR* d = opendir(dirPath);
+    if (!d) return INVALID_HANDLE_VALUE;
+    struct _mwFindHandle* fh = (struct _mwFindHandle*)malloc(sizeof(struct _mwFindHandle));
+    fh->dir = d;
+    strncpy(fh->pattern, filePat, sizeof(fh->pattern)-1); fh->pattern[sizeof(fh->pattern)-1]='\0';
+    strncpy(fh->dirPath, dirPath, sizeof(fh->dirPath)-1); fh->dirPath[sizeof(fh->dirPath)-1]='\0';
+    struct dirent* de;
+    while ((de = readdir(d)) != NULL) {
+        if (_mwFindMatch(de, fh, ffd)) return (HANDLE)fh;
+    }
+    closedir(d); free(fh);
+    return INVALID_HANDLE_VALUE;
+}
+
+static inline BOOL FindNextFileW(HANDLE hFind, WIN32_FIND_DATA* ffd)
+{
+    struct _mwFindHandle* fh = (struct _mwFindHandle*)hFind;
+    struct dirent* de;
+    while ((de = readdir(fh->dir)) != NULL) {
+        if (_mwFindMatch(de, fh, ffd)) return TRUE;
+    }
+    return FALSE;
+}
+
+static inline BOOL FindClose(HANDLE hFind)
+{
+    struct _mwFindHandle* fh = (struct _mwFindHandle*)hFind;
+    closedir(fh->dir); free(fh);
+    return TRUE;
+}
+
+#define FindFirstFile  FindFirstFileW
+#define FindNextFile   FindNextFileW
+
 // ── SKETCHFAB HTTP upload stubs (curl/openssl not needed for core export) ────
 // If SKETCHFAB is defined the source pulls in PublishSkfb.h which needs curl.
 // We undef it here; Mineways.cpp (the GUI) isn't compiled anyway.
