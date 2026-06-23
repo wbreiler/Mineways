@@ -2303,6 +2303,7 @@ int nbtGetBlocks(bfFile* pbf, unsigned char* buff, unsigned char* data, unsigned
 {
     int len, nsections, i;
     int biome_save;
+    int inttype;    // hoisted: declared here so goto SectionsCode doesn't bypass init
     int returnCode = NBT_VALID_BLOCK;	// means "fine"
     int sectionHeight;
     int formatClass = FORMAT_UP_THROUGH_1_12;
@@ -2398,7 +2399,7 @@ int nbtGetBlocks(bfFile* pbf, unsigned char* buff, unsigned char* data, unsigned
     // Format info at http://wiki.vg/Map_Format, though don't trust order.
     biome_save = *pbf->offset;
     memset(biome, 0, 16 * 16);
-    int inttype = nbtFindElement(pbf, "Biomes");
+    inttype = nbtFindElement(pbf, "Biomes");
     if (inttype != 7) {
         // Could be new format 1.13
         // Bizarrely, in the new format the Biome data may be missing for some chunks.

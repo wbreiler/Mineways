@@ -16731,6 +16731,7 @@ static int fixTouchingEdges()
     Point avgLoc, floc;
     int solidBlocks = 0;
     TouchRecord* touchList = NULL;
+    float norm;  // hoisted: declared here so goto FreeMemory doesn't bypass init
     //int maxVal;
 
     // big allocation, not much to be done about it.
@@ -16807,7 +16808,7 @@ static int fixTouchingEdges()
     // located. We want to ensure that the Y location always dominates over the XZ distance value, so
     // that lower blocks are favored over upper ones. At least, that's today's theory of what's good to add
     // in for a block that connects two edges.
-    float norm = (float)sqrt((float)gBoxSize[X] * (float)gBoxSize[X] + (float)gBoxSize[Z] * (float)gBoxSize[Z]);
+    norm = (float)sqrt((float)gBoxSize[X] * (float)gBoxSize[X] + (float)gBoxSize[Z] * (float)gBoxSize[Z]);
 
     // go through the grid, collecting up the locations needing processing
     for (x = gSolidBox.min[X]; x <= gSolidBox.max[X]; x++)
@@ -25979,6 +25980,13 @@ static int writeOBJBox(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightenedW
 #endif
 
     int exportMaterials = gModel.options->exportFlags & EXPT_OUTPUT_MATERIALS;
+    // hoisted declarations so goto Exit doesn't bypass initializations
+    bool subtypeMaterial;
+    bool subtypeGroup;
+    int noteProgress;
+    int mkGroupsObjs;
+    int prevDataVal;
+    int prevSwatchLoc;
 
     concatFileName3(objFileNameWithSuffix, gOutputFilePath, gOutputFileRoot, L".obj");
 
@@ -26012,7 +26020,7 @@ static int writeOBJBox(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightenedW
 
     convertWcharPathUnderlined(worldNameUnderlined, pWorldGuide->world, false);
 
-    int mkGroupsObjs = (gModel.options->exportFlags & EXPT_OUTPUT_OBJ_MAKE_GROUPS_OBJECTS);
+    mkGroupsObjs = (gModel.options->exportFlags & EXPT_OUTPUT_OBJ_MAKE_GROUPS_OBJECTS);
     if (!mkGroupsObjs) {
         // Output just one object. Else we output an object every time we output a group
         // Object name
@@ -26054,7 +26062,7 @@ static int writeOBJBox(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightenedW
     }
 
     // every 5% update the progress
-    int noteProgress = 1 + (int)((float)gModel.vertexCount / (0.5f * gProgress.absolute.output / 0.05f));
+    noteProgress = 1 + (int)((float)gModel.vertexCount / (0.5f * gProgress.absolute.output / 0.05f));
     wchar_t numString1[100];
     wchar_t numString2[100];
     prettifyNumber(gModel.vertexCount, numString2);
@@ -26071,8 +26079,8 @@ static int writeOBJBox(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightenedW
     }
 
     prevType = -1;
-    int prevDataVal = -1;
-    int prevSwatchLoc = -1;
+    prevDataVal = -1;
+    prevSwatchLoc = -1;
     groupCount = 0;
     // outputMaterial notes when a material is used for the first time;
     // should only be needed for when objects are not sorted by material (grouped by block).
@@ -26089,9 +26097,9 @@ static int writeOBJBox(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightenedW
         }
     }
 
-    bool subtypeGroup = ((gModel.options->exportFlags & EXPT_OUTPUT_OBJ_SPLIT_BY_BLOCK_TYPE) != 0x0);
+    subtypeGroup = ((gModel.options->exportFlags & EXPT_OUTPUT_OBJ_SPLIT_BY_BLOCK_TYPE) != 0x0);
     // for whether to search for a material change (but not necessarily make a group)
-    bool subtypeMaterial = subtypeGroup || gModel.exportTiles;
+    subtypeMaterial = subtypeGroup || gModel.exportTiles;
 
     // how often to update progress? # of faces per 5%
     noteProgress = 1 + (int)((float)gModel.faceCount / (0.5f * gProgress.absolute.output / 0.05f));
@@ -28538,6 +28546,7 @@ static int writeVRML2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightene
     bool exportSingleMaterial, exportSolidColors;
 
     int retCode = MW_NO_ERROR;
+    int noteFaceProgress;  // hoisted: declared here so goto Exit doesn't bypass init
 
     FaceRecord* pFace;
 
@@ -28606,7 +28615,7 @@ static int writeVRML2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightene
 
     firstShape = 1;
     currentFace = 0;
-    int noteFaceProgress = 1 + (int)((float)gModel.faceCount / (0.5f * gProgress.absolute.output / 0.04f));
+    noteFaceProgress = 1 + (int)((float)gModel.faceCount / (0.5f * gProgress.absolute.output / 0.04f));
     while (currentFace < gModel.faceCount)
     {
         char mtlName[256];
@@ -30769,6 +30778,10 @@ static void freeOutAndHashData()
 static int createMaterialsUSD(char *texturePath, char *mdlPath, wchar_t *mtlLibraryFilename, bool singleTerrainFile, char *slashDefaultPrim)
 {
     int retCode = 0;
+    bool usePreviewSurface;  // hoisted: declared here so goto Exit doesn't bypass init
+    float emission;          // hoisted likewise
+    int nextStart;           // hoisted likewise
+    int startRun;            // hoisted likewise
 
     char outputString[256];
     char textureString[256];
@@ -30850,15 +30863,15 @@ static int createMaterialsUSD(char *texturePath, char *mdlPath, wchar_t *mtlLibr
 #else
     char mtlName[MAX_PATH_AND_FILE];
 
-    int startRun = 0;
-    int nextStart = 0;
+    startRun = 0;
+    nextStart = 0;
     int numVerts;
 
     static bool outputCustomData = false;
-    float emission = 0.0f;
+    emission = 0.0f;
 
     // Assume we always want this on, but pre-emptively added to allow export toggle
-    bool usePreviewSurface = true;
+    usePreviewSurface = true;
 
     while (findEndOfGroup(startRun, gModel.faceCount, mtlName, nextStart, numVerts)) {
         changeCharToUnderline(' ', mtlName);
@@ -35635,7 +35648,7 @@ static void compositePNGSwatchOverColor(progimage_info* dst, int dstSwatch, int 
     unsigned int* dsti = (unsigned int*)(&dst->image_data[0]) + drow * swatchSize * dst->width + dcol * swatchSize;
 
     int row, col;
-    unsigned char or , og, ob, oa;
+    unsigned char ovr, og, ob, oa;
     unsigned char dr, dg, db, da;
     unsigned int* coveri, * cdsti;  // cppcheck-suppress 398
 
@@ -35648,7 +35661,7 @@ static void compositePNGSwatchOverColor(progimage_info* dst, int dstSwatch, int 
         {
             unsigned char oma;
 
-            GET_PNG_TEXEL(or , og, ob, oa, *coveri);
+            GET_PNG_TEXEL(ovr, og, ob, oa, *coveri);
 
             oma = 255 - oa;
 
@@ -35667,7 +35680,7 @@ static void compositePNGSwatchOverColor(progimage_info* dst, int dstSwatch, int 
             else
             {
                 // full blend must be done: use over, http://en.wikipedia.org/wiki/Alpha_compositing
-                dr = (unsigned char)((or *oa * 255 + ur * ua * oma) / (255 * 255));
+                dr = (unsigned char)((ovr * oa * 255 + ur * ua * oma) / (255 * 255));
                 dg = (unsigned char)((og * oa * 255 + ug * ua * oma) / (255 * 255));
                 db = (unsigned char)((ob * oa * 255 + ub * ua * oma) / (255 * 255));
                 da = (unsigned char)((oa * 255 + ua * oma) / 255);
