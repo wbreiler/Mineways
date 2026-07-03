@@ -13,6 +13,7 @@ public:
 
 private:
     int m_w = 0, m_h = 0;
+    unsigned char* m_rgbBuf = nullptr;  // reused RGB conversion buffer, resized alongside m_w/m_h
 
     // left-drag (pan) state
     bool   m_dragging = false;

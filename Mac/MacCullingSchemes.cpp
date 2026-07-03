@@ -9,12 +9,8 @@
 #include <wx/sizer.h>
 #include "MacCullingSchemes.h"
 #include "stdafx.h"   // project types via compat.h -> blockInfo.h etc.
-
-// Must match the definition in Win/CullingSchemes.h; defined here to avoid
-// pulling in that header (it declares CullingManager which uses HKEY).
-#ifndef NUM_CULL_ENTRIES
-#define NUM_CULL_ENTRIES 1200
-#endif
+#include "CullingSchemes.h"   // NUM_CULL_ENTRIES, applyCullingScheme/isBlockCulled decls
+                               // (CullingManager's HKEY field is fine: compat.h types it as void*)
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Runtime cull state (mirrors Win/CullingSchemes.cpp top section)
@@ -121,10 +117,8 @@ static wxArrayInt listSchemeIds()
     wxConfig cfg("Mineways");
     wxArrayInt ids;
     wxString grp; long cookie;
-    bool more = cfg.GetFirstGroup(grp, cookie);
-    // we're at root — look under /CullingSchemes/
     cfg.SetPath("/CullingSchemes");
-    more = cfg.GetFirstGroup(grp, cookie);
+    bool more = cfg.GetFirstGroup(grp, cookie);
     while (more) {
         if (grp.StartsWith("scheme_")) {
             long v; grp.Mid(7).ToLong(&v); ids.push_back((int)v);
@@ -209,7 +203,7 @@ public:
             if (e.GetId() == wxID_OK) {
                 SyncToCS();
                 wxString nm = m_nameCtrl->GetValue().Trim();
-                if (!nm.IsEmpty()) strncpy(m_cs.name, nm.utf8_str(), 254);
+                if (!nm.IsEmpty()) { strncpy(m_cs.name, nm.utf8_str(), 254); m_cs.name[254] = '\0'; }
             } else {
                 memcpy(&m_cs, &m_saved, sizeof(m_cs));  // restore on Cancel
             }

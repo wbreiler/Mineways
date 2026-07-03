@@ -15,6 +15,7 @@ extern int     GetMapWidth();
 extern int     GetMapHeight();
 extern int     GetMinHeight();
 extern int     GetMaxHeight();
+extern int&        GetCurDepth();
 extern int&        GetTargetDepth();
 extern BOOL&       GetHighlightOn();
 extern int&        GetStartHiX();
@@ -44,12 +45,14 @@ MapPanel::MapPanel(wxWindow* parent)
     SetBackgroundStyle(wxBG_STYLE_PAINT);
 }
 
-MapPanel::~MapPanel() {}
+MapPanel::~MapPanel() { free(m_rgbBuf); }
 
 void MapPanel::ResizeBuffer(int w, int h)
 {
     if (w == m_w && h == m_h) return;
     m_w = w; m_h = h;
+    free(m_rgbBuf);
+    m_rgbBuf = (w > 0 && h > 0) ? (unsigned char*)malloc((size_t)w * h * 3) : nullptr;
     if (gFrame) gFrame->OnMapPanelSize(w, h);
 }
 
@@ -77,16 +80,18 @@ void MapPanel::OnPaint(wxPaintEvent&)
         dc.Clear();
         return;
     }
-    // wxImage expects packed RGB (no alpha channel; we have RGBA)
-    // Copy into a separate RGB buffer.  wxImage::SetData takes ownership of malloc'd memory.
-    unsigned char* rgb = (unsigned char*)malloc((size_t)w * h * 3);
-    if (!rgb) { dc.Clear(); return; }
+    // wxImage expects packed RGB (no alpha channel; we have RGBA).
+    // Convert into m_rgbBuf, a member buffer resized alongside the panel (not reallocated
+    // every paint). static_data=true tells wxImage not to take/free ownership of it; the
+    // buffer only needs to outlive the wxBitmap(img) copy below.
+    if (!m_rgbBuf || w != m_w || h != m_h) { dc.Clear(); return; }
+    unsigned char* rgb = m_rgbBuf;
     for (int i = 0, j = 0; i < w * h * 4; i += 4, j += 3) {
         rgb[j]   = bits[i];
         rgb[j+1] = bits[i+1];
         rgb[j+2] = bits[i+2];
     }
-    wxImage img(w, h, rgb, false /*do not static*/);
+    wxImage img(w, h, rgb, true /*static: caller-owned buffer*/);
     dc.DrawBitmap(wxBitmap(img), 0, 0, false);
 }
 
@@ -121,7 +126,7 @@ void MapPanel::OnMouseMove(wxMouseEvent& e)
         int x0 = GetStartHiX(), z0 = GetStartHiZ();
         SetHighlightState(TRUE,
                           wxMin(x0,mx), GetTargetDepth(), wxMin(z0,mz),
-                          wxMax(x0,mx), GetMaxHeight(),   wxMax(z0,mz),
+                          wxMax(x0,mx), GetCurDepth(),    wxMax(z0,mz),
                           GetMinHeight(), GetMaxHeight(), HIGHLIGHT_UNDO_IGNORE);
         RedrawMap();
     } else if (IsLoaded()) {
@@ -143,7 +148,7 @@ void MapPanel::OnRightDown(wxMouseEvent& e)
     GetStartHiX() = mx;
     GetStartHiZ() = mz;
     GetHighlightOn() = TRUE;
-    SetHighlightState(TRUE, mx, GetTargetDepth(), mz, mx, GetMaxHeight(), mz,
+    SetHighlightState(TRUE, mx, GetTargetDepth(), mz, mx, GetCurDepth(), mz,
                       GetMinHeight(), GetMaxHeight(), HIGHLIGHT_UNDO_IGNORE);
     m_selecting = true;
     CaptureMouse();

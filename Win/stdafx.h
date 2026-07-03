@@ -87,8 +87,9 @@ THE POSSIBILITY OF SUCH DAMAGE.
 #include <math.h>
 #include <time.h>
 #include <assert.h>
+#include <string.h>
 
-#endif // WIN32
+#endif
 
 #define MINEWAYS_MAJOR_VERSION 13
 #define MINEWAYS_MINOR_VERSION 0
@@ -138,6 +139,13 @@ THE POSSIBILITY OF SUCH DAMAGE.
 #define PortaRead(h,buf,len)  (fread(buf,len,1,h)!=1)
 #define PortaWrite(h,buf,len) (fwrite(buf,len,1,h)!=1)
 #define PortaClose(h)       fclose(h)
+#define _wcsnicmp(a,b,n)    wcsncasecmp(a,b,n)
+#define _wcsicmp(a,b)       wcscasecmp(a,b)
+#define BR_UNUSED 0
+#endif
+
+#ifndef _countof
+#define _countof(arr) (sizeof(arr)/sizeof((arr)[0]))
 #endif
 
 #if __STDC_VERSION__ >= 199901L

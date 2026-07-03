@@ -12,6 +12,7 @@
 
 // Win32 shims + project headers (stdafx.h routes to compat.h on non-WIN32)
 #include "stdafx.h"
+#include "CullingSchemes.h"   // applyCullingScheme/isBlockCulled declarations
 
 // ─── Globals (mirror of Win/Mineways.cpp static globals) ────────────────────
 static Options gOptions = {
@@ -47,6 +48,7 @@ static int            gMapHeight = 0;
 
 // Scanned world list (parallel to gWorlds in Win/Mineways.cpp)
 static wxString gWorldDirs[MAX_WORLDS];
+static wxString gWorldDisplayNames[MAX_WORLDS];
 static int      gNumWorlds = 0;
 
 // Persistent export settings (survive across dialog invocations)
@@ -148,6 +150,7 @@ int     GetMapWidth()        { return gMapWidth; }
 int     GetMapHeight()       { return gMapHeight; }
 int     GetMinHeight()  { return gMinHeight; }
 int     GetMaxHeight()  { return gMaxHeight; }
+int&    GetCurDepth()   { return gCurDepth; }
 int&    GetTargetDepth() { return gTargetDepth; }
 BOOL&   GetHighlightOn() { return gHighlightOn; }
 int&    GetStartHiX()    { return gStartHiX; }
@@ -226,6 +229,9 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
     // Initialize block colors
     SetMapPremultipliedColors(0);
 
+    // Standard culling scheme: seeds barrier/structure-void as culled by default
+    applyCullingScheme(nullptr);
+
     // Build UI
     BuildMenu();
     CreateStatusBar(2);
@@ -287,7 +293,11 @@ MinewaysFrame::~MinewaysFrame()
     gMapBits = nullptr;
 }
 
-// Scan the saves directory and populate gWorldDirs[].
+// Scan the saves directory and populate gWorldDirs[]/gWorldDisplayNames[].
+// Mirrors Win/Mineways.cpp's loadWorldList: validates each candidate via
+// GetFileVersion (skips unreadable/unsupported saves, e.g. Bedrock folders
+// that happen to contain a level.dat) and prefers the level's in-game name
+// over the raw folder name.
 // Returns the number of worlds found.
 static int ScanWorldSaves(const wxString& savesDir)
 {
@@ -301,8 +311,21 @@ static int ScanWorldSaves(const wxString& savesDir)
         if (de->d_name[0] == '.') continue;         // skip . / .. / hidden
         wxString entry = savesDir + "/" + de->d_name;
         // A valid world directory contains level.dat
-        if (wxFileExists(entry + "/level.dat"))
-            gWorldDirs[gNumWorlds++] = entry;
+        if (!wxFileExists(entry + "/level.dat")) continue;
+
+        wchar_t wpath[MAX_PATH_AND_FILE], fileOpened[MAX_PATH_AND_FILE];
+        mbstowcs(wpath, entry.utf8_str(), MAX_PATH_AND_FILE);
+        int version = 0;
+        if (GetFileVersion(wpath, &version, fileOpened, MAX_PATH_AND_FILE) != 0)
+            continue;   // unreadable/unsupported (e.g. Bedrock) — skip like Windows does
+
+        char levelName[MAX_PATH_AND_FILE] = {};
+        wxString display = (GetLevelName(wpath, levelName, MAX_PATH_AND_FILE) == 0 && levelName[0])
+            ? wxString::FromUTF8(levelName) : wxFileName(entry).GetFullName();
+
+        gWorldDirs[gNumWorlds] = entry;
+        gWorldDisplayNames[gNumWorlds] = display;
+        gNumWorlds++;
     }
     closedir(d);
     return gNumWorlds;
@@ -325,8 +348,7 @@ void MinewaysFrame::BuildMenu()
     if (gNumWorlds > 0) {
         worldsMenu->AppendSeparator();
         for (int i = 0; i < gNumWorlds; i++) {
-            wxString name = wxFileName(gWorldDirs[i]).GetFullName();
-            worldsMenu->Append(ID_WORLD_ITEM_BASE + i, name);
+            worldsMenu->Append(ID_WORLD_ITEM_BASE + i, gWorldDisplayNames[i]);
         }
     }
     fileMenu->AppendSubMenu(worldsMenu, "Open World");
@@ -575,6 +597,7 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
     efd.tileDirString[0] = '\0';
     efd.chkTextureRGB = 1; efd.chkTextureA = 1; efd.chkTextureRGBA = 1;
     efd.radioScaleByBlock = 1;
+    efd.radioRotate0 = 1;
 
     // Set export flags on gOptions
     gOptions.pEFD = &efd;
@@ -625,14 +648,20 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
         efd.minxVal, efd.minyVal, efd.minzVal,
         efd.maxxVal, efd.maxyVal, efd.maxzVal,
         gMinHeight, gMaxHeight,
-        nullptr /*progress*/, gSelectTerrainPathAndName, (wchar_t*)L"",
+        nullptr /*progress*/, gSelectTerrainPathAndName, (wchar_t*)getSelectedCullingSchemeW(),
         &outputFileList,
         13, 0, gVersionID,
         nullptr /*changeBlock*/, 16 /*instanceChunkSize*/,
         userSelectedBiome, biomeIndex,
         groupCount, groupCountSize, groupCountArray);
 
-    if (errCode == MW_NO_ERROR || errCode < MW_BEGIN_ERRORS) {
+    if (errCode >= MW_BEGIN_NOTHING_TO_DO && errCode < MW_BEGIN_ERRORS) {
+        // Codes in this range (e.g. MW_NO_BLOCKS_FOUND, MW_ALL_BLOCKS_DELETED) mean
+        // SaveVolume deliberately wrote nothing — not an error, but not success either.
+        // Mirrors Win/Mineways.cpp's `errCode < MW_BEGIN_NOTHING_TO_DO` success gate.
+        wxMessageBox("No file was written: nothing exportable was found in the selected region.",
+                     "Nothing exported", wxOK | wxICON_WARNING, this);
+    } else if (errCode == MW_NO_ERROR || errCode < MW_BEGIN_ERRORS) {
         // Build message before freeing the list
         wxString msg = "Export complete.";
         if (outputFileList.count > 0) {
@@ -672,10 +701,26 @@ void MinewaysFrame::OnAbout(wxCommandEvent&)
                  "About Mineways", wxOK | wxICON_INFORMATION, this);
 }
 
+// Dragging either depth slider must update the Y bound of an already-drawn
+// selection, not just future ones — otherwise the selection used by Export
+// silently keeps whatever Y bound was in effect when the box was drawn,
+// making the sliders look like they "do nothing". Mirrors Win/Mineways.cpp's
+// slider handlers, which re-call SetHighlightState with the existing X/Z
+// bounds whenever gCurDepth/gTargetDepth changes.
+static void ReapplyHighlightDepth()
+{
+    if (!gHighlightOn) return;
+    int on, minx, miny, minz, maxx, maxy, maxz;
+    GetHighlightState(&on, &minx, &miny, &minz, &maxx, &maxy, &maxz, gMinHeight);
+    SetHighlightState(on, minx, gTargetDepth, minz, maxx, gCurDepth, maxz,
+                      gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_IGNORE);
+}
+
 void MinewaysFrame::OnSliderTop(wxCommandEvent&)
 {
     gCurDepth = m_sliderTop->GetValue();
     m_labelTop->SetLabel(wxString::Format("%d", gCurDepth));
+    ReapplyHighlightDepth();
     if (m_mapPanel) m_mapPanel->RedrawMap();
 }
 
@@ -683,7 +728,8 @@ void MinewaysFrame::OnSliderBot(wxCommandEvent&)
 {
     gTargetDepth = m_sliderBot->GetValue();
     m_labelBot->SetLabel(wxString::Format("%d", gTargetDepth));
-    // bottom depth affects export bounds; map display uses gCurDepth (top slider)
+    ReapplyHighlightDepth();
+    if (m_mapPanel) m_mapPanel->RedrawMap();
 }
 
 // ─── World loading ────────────────────────────────────────────────────────────
