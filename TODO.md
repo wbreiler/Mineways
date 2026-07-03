@@ -190,9 +190,28 @@ first. Left in the backlog below rather than half-implementing a
       together (the regression test for the bug above — confirmed export
       bounds match the script's selection, not stale state, and that a
       real file is written). All checks passed.
-- [x] Recent Exports submenu (`IDM_RECENT_EXPORT_BASE`, up to 5 entries) —
-      was blocked on Import Settings existing; now unblocked. Not yet
-      implemented — next up.
+- [x] Recent Exports submenu (`IDM_RECENT_EXPORT_BASE`, up to 5 entries),
+      ported from `Win/Mineways.cpp`'s issue #138 implementation
+      (`addToRecentExports`/`populateRecentExportsMenu`/the
+      `IDM_RECENT_EXPORT_BASE` click handler). Placed in the File menu
+      right after Import Settings, matching `Win/Mineways.rc`. Newest
+      first, deduped (re-exporting/reopening an existing entry moves it to
+      the front rather than adding a duplicate), persisted to `wxConfig`
+      as `recentExport0..4` immediately on every change (not just at app
+      exit). `MinewaysFrame::RunExport` records every successful model
+      export (schematics included; map exports don't go through
+      `RunExport` at all on Mac, so they're naturally excluded — same
+      outcome as Windows' explicit `gPrintModel != MAP_EXPORT` check, since
+      a PNG has no embedded settings header to re-import). Clicking an
+      entry re-opens it exactly like File > Import Settings would
+      (schematic-like extensions reopen as a world via `LoadSchematic`
+      instead, matching Windows' dispatch); a missing file is pruned from
+      the list with a warning rather than erroring. Verified with a
+      standalone headless harness (built and torn down during
+      development, not checked in): three exports recorded and persisted
+      to config, re-exporting an existing path doesn't grow the list, and
+      the recorded file round-trips through `ImportSettingsFile`. All
+      checks passed.
 
 ### Explicitly deferred to the upstream maintainer
 
@@ -244,7 +263,7 @@ first. Left in the backlog below rather than half-implementing a
 - [x] Save/restore: terrain file path
 - [x] Save/restore: last export path
 - [x] Save/restore: full export settings (`ExportFileData`)
-- [ ] Save/restore: recent exports submenu (up to 5 entries) — was blocked on Import Settings, now unblocked
+- [x] Save/restore: recent exports submenu (up to 5 entries)
 
 ## App Packaging
 

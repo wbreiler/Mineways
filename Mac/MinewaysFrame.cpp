@@ -70,6 +70,12 @@ static int      gNumTerrainFiles = 0;
 static ExportFileData gEfd = {};
 static wchar_t        gExportPath[4096] = {};
 
+// Recent Exports (issue #138 parity): most-recently-exported-or-reopened files, newest
+// first. Persisted via wxConfig as recentExport0..recentExport{MAX_RECENT_EXPORTS-1}
+// (Windows uses the registry at the equivalent RecentExports key).
+static wxString gRecentExports[MAX_RECENT_EXPORTS];
+static int      gRecentExportCount = 0;
+
 // The singleton frame (so MapPanel event handlers can reach it)
 MinewaysFrame* gFrame = nullptr;
 
@@ -121,6 +127,31 @@ static bool LoadExportFileData(ExportFileData& e)
         bytes[i] = (unsigned char)v;
     }
     return true;
+}
+
+// Recent Exports persistence: written immediately on every change (not just at app exit),
+// since Windows' saveRecentExportsToRegistry() does the same right after addToRecentExports.
+static void SaveRecentExportsToConfig()
+{
+    wxConfig cfg("Mineways");
+    for (int i = 0; i < MAX_RECENT_EXPORTS; i++) {
+        wxString key = wxString::Format("recentExport%d", i);
+        if (i < gRecentExportCount) cfg.Write(key, gRecentExports[i]);
+        else cfg.DeleteEntry(key);
+    }
+}
+
+// Loads the persisted list, dropping entries whose files no longer exist (same as Windows'
+// loadRecentExportsFromRegistry). Called once at startup.
+static void LoadRecentExportsFromConfig()
+{
+    wxConfig cfg("Mineways");
+    gRecentExportCount = 0;
+    for (int i = 0; i < MAX_RECENT_EXPORTS; i++) {
+        wxString path;
+        if (cfg.Read(wxString::Format("recentExport%d", i), &path) && !path.IsEmpty() && wxFileExists(path))
+            gRecentExports[gRecentExportCount++] = path;
+    }
 }
 
 // Export progress callback, mirroring Win/Mineways.cpp's updateProgress(): SaveVolume
@@ -274,6 +305,8 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_EXPORT_MAP,       MinewaysFrame::OnExportMap)
     EVT_MENU(ID_DOWNLOAD_TERRAIN_FILES, MinewaysFrame::OnDownloadTerrainFiles)
     EVT_MENU(ID_IMPORT_SETTINGS, MinewaysFrame::OnImportSettings)
+    EVT_MENU_RANGE(ID_RECENT_EXPORT_BASE, ID_RECENT_EXPORT_BASE + MAX_RECENT_EXPORTS - 1,
+                   MinewaysFrame::OnRecentExportItem)
     EVT_MENU(ID_HELP_KEYBOARD,         MinewaysFrame::OnHelpURL)
     EVT_MENU(ID_HELP_TROUBLESHOOTING,  MinewaysFrame::OnHelpURL)
     EVT_MENU(ID_HELP_DOCUMENTATION,    MinewaysFrame::OnHelpURL)
@@ -320,6 +353,7 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
     if (cfg.Read("exportPath", &cfgExportPath))
         mbstowcs(gExportPath, cfgExportPath.utf8_str(), 4096);
     LoadExportFileData(gEfd);   // falls back to the InitViewExportData preset above if absent/stale
+    LoadRecentExportsFromConfig();
     gCurX = cfg.ReadDouble("curX", 0.0);
     gCurZ = cfg.ReadDouble("curZ", 0.0);
     gCurScale = cfg.ReadDouble("curScale", 1.0);
@@ -516,6 +550,9 @@ void MinewaysFrame::BuildMenu()
                      "Manage block culling schemes (hide blocks from map and export)");
     fileMenu->Append(ID_IMPORT_SETTINGS, "Import Settings...\tCtrl+I",
                      "Re-import settings from a previously-exported file, or run a Mineways script");
+    m_recentExportsMenu = new wxMenu;
+    fileMenu->AppendSubMenu(m_recentExportsMenu, "Recent Exports");
+    PopulateRecentExportsMenu();
     fileMenu->AppendSeparator();
     fileMenu->Append(ID_EXPORT_OBJ, "Export Model...\tCtrl+E",
                      "Export selected region to OBJ");
@@ -987,6 +1024,19 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
             msg += "\n(expected: " + wxString::FromUTF8(outPath) + ")";
         }
         wxMessageBox(msg, "Export done", wxOK | wxICON_INFORMATION, this);
+
+        // Issue #138 parity: record successful model exports in the Recent Exports menu.
+        // Use the first actually-written file so the recorded path has the on-disk suffix
+        // SaveVolume adds when the user's typed name is missing one.
+        if (outputFileList.count > 0 && outputFileList.name[0]) {
+            char recordedPath[MAX_PATH_AND_FILE];
+            wcstombs(recordedPath, outputFileList.name[0], sizeof(recordedPath));
+            AddToRecentExports(wxString::FromUTF8(recordedPath));
+        } else {
+            char recordedPath[MAX_PATH_AND_FILE];
+            wcstombs(recordedPath, outputPath, sizeof(recordedPath));
+            AddToRecentExports(wxString::FromUTF8(recordedPath));
+        }
     } else {
         // Show path even on failure so user can diagnose
         char attemptedPath[MAX_PATH_AND_FILE] = {};
@@ -1060,6 +1110,87 @@ void MinewaysFrame::OnImportSettings(wxCommandEvent&)
         wxMessageBox(errorMsg, "Import warnings", wxOK | wxICON_WARNING, this);
     }
     RedrawMap();
+}
+
+// Recent Exports (issue #138 parity): rebuild the submenu from gRecentExports[]. If empty,
+// show a disabled placeholder so the submenu indicator doesn't lead nowhere.
+void MinewaysFrame::PopulateRecentExportsMenu()
+{
+    if (!m_recentExportsMenu) return;
+    while (m_recentExportsMenu->GetMenuItemCount() > 0)
+        m_recentExportsMenu->Destroy(m_recentExportsMenu->FindItemByPosition(0));
+
+    if (gRecentExportCount == 0) {
+        m_recentExportsMenu->Append(ID_RECENT_EXPORTS_PLACEHOLDER, "(no recent exports)")->Enable(false);
+    } else {
+        for (int i = 0; i < gRecentExportCount; i++) {
+            wxString basename = wxFileName(gRecentExports[i]).GetFullName();
+            wxString label = wxString::Format("&%d %s (%s)", i + 1, basename, gRecentExports[i]);
+            m_recentExportsMenu->Append(ID_RECENT_EXPORT_BASE + i, label);
+        }
+    }
+}
+
+// Adds `path` to the front of the Recent Exports list (moving it there if already present,
+// no duplicates), persists, and refreshes the menu. Ported from Win/Mineways.cpp's
+// addToRecentExports.
+void MinewaysFrame::AddToRecentExports(const wxString& path)
+{
+    if (path.IsEmpty()) return;
+
+    for (int i = 0; i < gRecentExportCount; i++) {
+        if (gRecentExports[i].CmpNoCase(path) == 0) {
+            for (int j = i; j < gRecentExportCount - 1; j++) gRecentExports[j] = gRecentExports[j + 1];
+            gRecentExportCount--;
+            break;
+        }
+    }
+    int shiftEnd = (gRecentExportCount < MAX_RECENT_EXPORTS) ? gRecentExportCount : MAX_RECENT_EXPORTS - 1;
+    for (int i = shiftEnd; i > 0; i--) gRecentExports[i] = gRecentExports[i - 1];
+    gRecentExports[0] = path;
+    if (gRecentExportCount < MAX_RECENT_EXPORTS) gRecentExportCount++;
+
+    SaveRecentExportsToConfig();
+    PopulateRecentExportsMenu();
+}
+
+// A Recent Exports submenu item was clicked. Re-opens the file the same way File > Import
+// Settings does — except schematics, which reopen as a world (mirrors the drag-drop / File >
+// Open dispatch), matching Win/Mineways.cpp's IDM_RECENT_EXPORT_BASE handler.
+void MinewaysFrame::OnRecentExportItem(wxCommandEvent& e)
+{
+    int idx = e.GetId() - ID_RECENT_EXPORT_BASE;
+    if (idx < 0 || idx >= gRecentExportCount) return;
+
+    wxString chosen = gRecentExports[idx];
+    if (!wxFileExists(chosen)) {
+        wxMessageBox(wxString::Format(
+            "The recent export file\n\n    %s\n\nis no longer at that location, so it has been removed from the list.",
+            chosen), "File not found", wxOK | wxICON_WARNING, this);
+        for (int j = idx; j < gRecentExportCount - 1; j++) gRecentExports[j] = gRecentExports[j + 1];
+        gRecentExportCount--;
+        SaveRecentExportsToConfig();
+        PopulateRecentExportsMenu();
+        return;
+    }
+
+    wxString lower = chosen.Lower();
+    bool isSchematicLike = lower.EndsWith(".schematic") || lower.EndsWith(".schem");
+    if (isSchematicLike) {
+        wxString err = LoadSchematic(chosen);
+        if (!err.IsEmpty()) wxMessageBox(err, "Load error", wxOK | wxICON_ERROR, this);
+    } else {
+        wxString errorMsg;
+        bool ok = ImportSettingsFile(this, chosen, errorMsg);
+        if (!ok) {
+            wxMessageBox(errorMsg.IsEmpty() ? "Import failed." : errorMsg,
+                         "Import error", wxOK | wxICON_ERROR, this);
+        } else if (!errorMsg.IsEmpty()) {
+            wxMessageBox(errorMsg, "Import warnings", wxOK | wxICON_WARNING, this);
+        }
+    }
+    RedrawMap();
+    AddToRecentExports(chosen);   // bump to top
 }
 
 void MinewaysFrame::OnGiveMoreExportMemory(wxCommandEvent&)

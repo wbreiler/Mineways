@@ -28,6 +28,11 @@ public:
     void JumpToPlayer();
     bool JumpToModel();      // false if nothing is selected
 
+    // Recent Exports (issue #138 parity): re-opens a previously-exported file the same way
+    // File > Import Settings does (or reloads it as a world, for schematics). Exposed so
+    // Mac/ImportSettings.cpp's CommandExportFile can record a freshly-written export.
+    void AddToRecentExports(const wxString& path);
+
 private:
     MapPanel*    m_mapPanel   = nullptr;
     wxSlider*    m_sliderTop  = nullptr;   // top-depth (ceiling)
@@ -67,6 +72,9 @@ private:
     void OnExportMap(wxCommandEvent&);
     void OnDownloadTerrainFiles(wxCommandEvent&);
     void OnImportSettings(wxCommandEvent&);
+    void OnRecentExportItem(wxCommandEvent&);  // dynamic Recent Exports submenu items
+    void PopulateRecentExportsMenu();
+    wxMenu* m_recentExportsMenu = nullptr;
     // Help menu
     void OnAbout(wxCommandEvent&);
     void OnHelpURL(wxCommandEvent&);   // keyboard/troubleshooting/documentation/report-a-bug (same handler, ID picks URL)
@@ -122,4 +130,8 @@ enum {
     // Dynamic terrainExt*.png list items occupy [ID_TERRAIN_ITEM_BASE, ID_TERRAIN_ITEM_BASE+MAX_TERRAIN_FILES)
     ID_TERRAIN_ITEM_BASE = wxID_HIGHEST + 200,
     MAX_TERRAIN_FILES    = 45,
+    // Recent Exports submenu items occupy [ID_RECENT_EXPORT_BASE, ID_RECENT_EXPORT_BASE+MAX_RECENT_EXPORTS)
+    ID_RECENT_EXPORT_BASE = wxID_HIGHEST + 300,
+    MAX_RECENT_EXPORTS    = 5,
+    ID_RECENT_EXPORTS_PLACEHOLDER = wxID_HIGHEST + 310,
 };
