@@ -80,3 +80,5 @@ TileMaker/TileMaker/Luna_64x_1.19/*
 Mac/*.o
 Mac/*.o.tmp
 Mac/mineways
+Mac/Mineways.app/
+.DS_Store

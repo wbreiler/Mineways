@@ -28,6 +28,8 @@ private:
     void OnTestBlockWorld(wxCommandEvent&);
     void OnWorldMenuItem(wxCommandEvent&);  // dynamic world-list items
     void OnGoToLocation(wxCommandEvent&);
+    void OnChooseTerrainFile(wxCommandEvent&);
+    void OnCullingSchemes(wxCommandEvent&);
     void OnExportOBJ(wxCommandEvent&);
     void OnQuit(wxCommandEvent&);
     // View menu
@@ -44,6 +46,8 @@ enum {
     ID_OPEN_WORLD      = wxID_HIGHEST + 1,
     ID_OPEN_FILE,
     ID_TEST_BLOCK_WORLD,
+    ID_CHOOSE_TERRAIN,
+    ID_CULLING_SCHEMES,
     ID_EXPORT_OBJ,
     ID_SLIDER_TOP,
     ID_SLIDER_BOT,

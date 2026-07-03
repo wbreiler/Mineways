@@ -7,6 +7,8 @@
 #include "MinewaysFrame.h"
 #include "MapPanel.h"
 #include "LocationDialog.h"
+#include "ExportDialog.h"
+#include "MacCullingSchemes.h"
 
 // Win32 shims + project headers (stdafx.h routes to compat.h on non-WIN32)
 #include "stdafx.h"
@@ -47,6 +49,9 @@ static int            gMapHeight = 0;
 static wxString gWorldDirs[MAX_WORLDS];
 static int      gNumWorlds = 0;
 
+// Persistent export settings (survive across dialog invocations)
+static ExportSettings gExportSettings = { 0, {}, 0,0,0,0,0,0, 2, true, false };
+
 // The singleton frame (so MapPanel event handlers can reach it)
 MinewaysFrame* gFrame = nullptr;
 
@@ -66,6 +71,55 @@ static void splitPath(const wchar_t* pathAndName, wchar_t* dir, wchar_t* name)
 
 // Progress callback stub (no UI progress for now)
 static void progressCB(float /*p*/, wchar_t* /*buf*/) {}
+
+// Returns 0 on success, non-zero on error (mirrors Win loadSchematic / loadSpongeSchematic).
+static int LoadSchematicFile(const wchar_t* pathAndFile, bool isSponge)
+{
+    CloseAll();
+
+    // Free any prior schematic data
+    free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
+    free(gWorldGuide.sch.data);   gWorldGuide.sch.data   = nullptr;
+
+    if (isSponge) {
+        int w = 0, h = 0, l = 0;
+        unsigned char* blocks = nullptr;
+        unsigned char* data   = nullptr;
+        int rv = GetSpongeSchematic(pathAndFile, &w, &h, &l, &blocks, &data);
+        if (rv != 1) { free(blocks); free(data); return 100 + (rv == -1 ? 1 : 5); }
+        gWorldGuide.sch.width  = w; gWorldGuide.sch.height = h; gWorldGuide.sch.length = l;
+        gWorldGuide.sch.numBlocks = w * h * l;
+        gWorldGuide.sch.blocks = blocks; gWorldGuide.sch.data = data;
+        gVersionID = 2586;
+    } else {
+        if (GetSchematicWord(pathAndFile, "Width",  &gWorldGuide.sch.width)  != 1) return 101;
+        if (GetSchematicWord(pathAndFile, "Height", &gWorldGuide.sch.height) != 1) return 102;
+        if (GetSchematicWord(pathAndFile, "Length", &gWorldGuide.sch.length) != 1) return 103;
+        gWorldGuide.sch.numBlocks = gWorldGuide.sch.width * gWorldGuide.sch.height * gWorldGuide.sch.length;
+        if (gWorldGuide.sch.numBlocks <= 0) return 104;
+        gWorldGuide.sch.blocks = (unsigned char*)malloc(gWorldGuide.sch.numBlocks);
+        gWorldGuide.sch.data   = (unsigned char*)malloc(gWorldGuide.sch.numBlocks);
+        if (!gWorldGuide.sch.blocks || !gWorldGuide.sch.data) {
+            free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
+            free(gWorldGuide.sch.data);   gWorldGuide.sch.data   = nullptr;
+            return 105;
+        }
+        if (GetSchematicBlocksAndData(pathAndFile, gWorldGuide.sch.numBlocks,
+                                       gWorldGuide.sch.blocks, gWorldGuide.sch.data) != 1) {
+            free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
+            free(gWorldGuide.sch.data);   gWorldGuide.sch.data   = nullptr;
+            return 105;
+        }
+        gVersionID = 1343;  // MC 1.12.2
+    }
+
+    gMinecraftVersion = DATA_VERSION_TO_RELEASE_NUMBER(gVersionID);
+    gMaxHeight = MAX_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
+    gMinHeight = ZERO_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
+    gWorldGuide.minHeight = gMinHeight;
+    gWorldGuide.maxHeight = gMaxHeight;
+    return 0;
+}
 
 // ─── MapPanel calls this to redraw into gMapBits, then Refresh() itself ──────
 // (called from MapPanel.cpp via friend access or by having this function visible)
@@ -116,6 +170,8 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_OPEN_FILE,        MinewaysFrame::OnOpenFile)
     EVT_MENU(ID_TEST_BLOCK_WORLD, MinewaysFrame::OnTestBlockWorld)
     EVT_MENU(ID_GO_TO_LOCATION,   MinewaysFrame::OnGoToLocation)
+    EVT_MENU(ID_CHOOSE_TERRAIN,   MinewaysFrame::OnChooseTerrainFile)
+    EVT_MENU(ID_CULLING_SCHEMES,  MinewaysFrame::OnCullingSchemes)
     EVT_MENU(ID_EXPORT_OBJ,       MinewaysFrame::OnExportOBJ)
     EVT_MENU(wxID_EXIT,           MinewaysFrame::OnQuit)
     EVT_MENU(wxID_ABOUT,          MinewaysFrame::OnAbout)
@@ -139,14 +195,32 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
     gWorldGuide.sch.blocks = gWorldGuide.sch.data = nullptr;
     gWorldGuide.nbtVersion = 0;
 
-    // Default terrain file in exe's directory
-    wxString exeDir = wxStandardPaths::Get().GetDataDir();
-    wxString terrainPath = exeDir + "/terrainExt.png";
+    // Default terrain file: bundle Resources/ first, then exe dir for standalone runs
+    wxString terrainPath = wxStandardPaths::Get().GetResourcesDir() + "/terrainExt.png";
+    if (!wxFileExists(terrainPath)) {
+        wxFileName exeFN(wxStandardPaths::Get().GetExecutablePath());
+        terrainPath = exeFN.GetPath() + "/terrainExt.png";
+    }
+
+    // Default world saves path
+    wxString savesDir = wxGetHomeDir() + "/Library/Application Support/minecraft/saves";
+
+    // Restore persisted settings
+    wxConfig cfg("Mineways");
+    wxString cfgTerrain, cfgSaves, cfgExportPath;
+    if (cfg.Read("terrainPath", &cfgTerrain) && wxFileExists(cfgTerrain))
+        terrainPath = cfgTerrain;
+    if (cfg.Read("savesDir", &cfgSaves))
+        savesDir = cfgSaves;
+    if (cfg.Read("exportPath", &cfgExportPath))
+        mbstowcs(gExportSettings.outputPath, cfgExportPath.utf8_str(), 4096);
+    gCurX = cfg.ReadDouble("curX", 0.0);
+    gCurZ = cfg.ReadDouble("curZ", 0.0);
+    gCurScale = cfg.ReadDouble("curScale", 1.0);
+    if (gCurScale < 0.01) gCurScale = 1.0;
+
     mbstowcs(gSelectTerrainPathAndName, terrainPath.utf8_str(), MAX_PATH_AND_FILE);
     splitPath(gSelectTerrainPathAndName, gSelectTerrainDir, nullptr);
-
-    // Default world saves path: ~/Library/Application Support/minecraft/saves
-    wxString savesDir = wxGetHomeDir() + "/Library/Application Support/minecraft/saves";
     mbstowcs(gWorldPathDefault, savesDir.utf8_str(), MAX_PATH_AND_FILE);
 
     // Initialize block colors
@@ -193,6 +267,21 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
 
 MinewaysFrame::~MinewaysFrame()
 {
+    // Persist settings to plist via wxConfig
+    wxConfig cfg("Mineways");
+    char buf[4096];
+    wcstombs(buf, gSelectTerrainPathAndName, sizeof(buf));
+    cfg.Write("terrainPath",  wxString::FromUTF8(buf));
+    char savesPath[4096]; wcstombs(savesPath, gWorldPathDefault, sizeof(savesPath));
+    cfg.Write("savesDir",    wxString::FromUTF8(savesPath));
+    if (gExportSettings.outputPath[0]) {
+        wcstombs(buf, gExportSettings.outputPath, sizeof(buf));
+        cfg.Write("exportPath", wxString::FromUTF8(buf));
+    }
+    cfg.Write("curX",     gCurX);
+    cfg.Write("curZ",     gCurZ);
+    cfg.Write("curScale", gCurScale);
+
     gFrame = nullptr;
     free(gMapBits);
     gMapBits = nullptr;
@@ -246,6 +335,10 @@ void MinewaysFrame::BuildMenu()
                      "Open a level.dat or .schematic/.schem file");
     fileMenu->Append(ID_GO_TO_LOCATION, "Go To Location...\tCtrl+G",
                      "Jump map view to a specific X,Z coordinate");
+    fileMenu->Append(ID_CHOOSE_TERRAIN, "Choose Terrain File...",
+                     "Select a custom terrainExt*.png texture atlas");
+    fileMenu->Append(ID_CULLING_SCHEMES, "Culling Schemes...",
+                     "Manage block culling schemes (hide blocks from map and export)");
     fileMenu->AppendSeparator();
     fileMenu->Append(ID_EXPORT_OBJ, "Export Model...\tCtrl+E",
                      "Export selected region to OBJ");
@@ -307,9 +400,13 @@ void MinewaysFrame::OnTestBlockWorld(wxCommandEvent&)
     gMinecraftVersion = DATA_VERSION_TO_RELEASE_NUMBER(gVersionID);
     gMinHeight        = ZERO_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
     gMaxHeight        = MAX_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
+    // block_alloc uses gWorldGuide.minHeight/maxHeight to size the grid allocation
+    gWorldGuide.minHeight = gMinHeight;
+    gWorldGuide.maxHeight = gMaxHeight;
     gCurX = gCurZ     = 0.0;
     gCurScale         = 1.0;
     gCurDepth         = gMaxHeight;
+    gTargetDepth      = gMinHeight;
     gLoaded           = TRUE;
 
     SetTitle("Mineways — Test Block World");
@@ -318,8 +415,8 @@ void MinewaysFrame::OnTestBlockWorld(wxCommandEvent&)
         m_sliderTop->SetValue(gCurDepth);
         m_labelTop->SetLabel(wxString::Format("%d", gCurDepth));
         m_sliderBot->SetRange(gMinHeight, gMaxHeight);
-        m_sliderBot->SetValue(gMinHeight);
-        m_labelBot->SetLabel(wxString::Format("%d", gMinHeight));
+        m_sliderBot->SetValue(gTargetDepth);
+        m_labelBot->SetLabel(wxString::Format("%d", gTargetDepth));
     }
     SetStatusText("Test Block World loaded", 0);
     if (m_mapPanel) m_mapPanel->RedrawMap();
@@ -343,6 +440,29 @@ void MinewaysFrame::OnWorldMenuItem(wxCommandEvent& e)
     LoadWorldFromDir(gWorldDirs[idx]);
 }
 
+void MinewaysFrame::OnCullingSchemes(wxCommandEvent&)
+{
+    doCullingSchemesMac(this);
+    if (m_mapPanel && gLoaded) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnChooseTerrainFile(wxCommandEvent&)
+{
+    char curPath[MAX_PATH_AND_FILE];
+    wcstombs(curPath, gSelectTerrainPathAndName, sizeof(curPath));
+    wxString defaultDir  = wxFileName(wxString::FromUTF8(curPath)).GetPath();
+    wxString defaultFile = wxFileName(wxString::FromUTF8(curPath)).GetFullName();
+
+    wxFileDialog dlg(this, "Choose Terrain File", defaultDir, defaultFile,
+                     "Terrain files (terrainExt*.png)|terrainExt*.png|PNG files (*.png)|*.png",
+                     wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dlg.ShowModal() != wxID_OK) return;
+
+    wxString path = dlg.GetPath();
+    mbstowcs(gSelectTerrainPathAndName, path.utf8_str(), MAX_PATH_AND_FILE);
+    splitPath(gSelectTerrainPathAndName, gSelectTerrainDir, nullptr);
+}
+
 void MinewaysFrame::OnOpenFile(wxCommandEvent&)
 {
     wxFileDialog dlg(this, "Open world file or schematic", "", "",
@@ -353,11 +473,59 @@ void MinewaysFrame::OnOpenFile(wxCommandEvent&)
     // If the user picked level.dat, open its parent directory as the world
     if (path.EndsWith("level.dat")) {
         LoadWorldFromDir(wxFileName(path).GetPath());
-    } else {
-        // schematic — placeholder
-        wxMessageBox("Schematic import not yet wired up in the wxWidgets build.",
-                     "Not implemented", wxOK | wxICON_INFORMATION, this);
+        return;
     }
+
+    // Schematic import
+    bool isSponge = path.Lower().EndsWith(".schem");
+    bool isLegacy = path.Lower().EndsWith(".schematic");
+    if (!isSponge && !isLegacy) {
+        wxMessageBox("Unrecognised file type. Open level.dat, .schematic, or .schem files.",
+                     "Open error", wxOK | wxICON_WARNING, this);
+        return;
+    }
+
+    CloseAll();
+    free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
+    free(gWorldGuide.sch.data);   gWorldGuide.sch.data   = nullptr;
+
+    gWorldGuide.type = WORLD_SCHEMATIC_TYPE;
+    gWorldGuide.sch.isSponge = isSponge;
+    gWorldGuide.sch.repeat   = (path.Find("repeat") != wxNOT_FOUND);
+    mbstowcs(gWorldGuide.world, path.utf8_str(), MAX_PATH_AND_FILE);
+
+    int err = LoadSchematicFile(gWorldGuide.world, isSponge);
+    if (err != 0) {
+        gWorldGuide.type = WORLD_UNLOADED_TYPE;
+        wxMessageBox(wxString::Format("Could not load schematic (error %d).", err),
+                     "Load error", wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    gCurX = gWorldGuide.sch.width  / 2.0;
+    gCurZ = gWorldGuide.sch.length / 2.0;
+    gCurScale  = 1.0;
+    gCurDepth  = gMaxHeight;
+    gTargetDepth = gMinHeight;
+    gLoaded = TRUE;
+
+    if (m_sliderTop) {
+        m_sliderTop->SetRange(gMinHeight, gMaxHeight);
+        m_sliderTop->SetValue(gCurDepth);
+        m_labelTop->SetLabel(wxString::Format("%d", gCurDepth));
+    }
+    if (m_sliderBot) {
+        m_sliderBot->SetRange(gMinHeight, gMaxHeight);
+        m_sliderBot->SetValue(gTargetDepth);
+        m_labelBot->SetLabel(wxString::Format("%d", gTargetDepth));
+    }
+
+    wxString name = wxFileName(path).GetName();
+    SetTitle(wxString::Format("Mineways — %s", name));
+    SetStatusText(wxString::Format("Schematic: %s  %dx%dx%d",
+                                   name, gWorldGuide.sch.width,
+                                   gWorldGuide.sch.height, gWorldGuide.sch.length), 0);
+    if (m_mapPanel) m_mapPanel->RedrawMap();
 }
 
 void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
@@ -366,9 +534,132 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
         wxMessageBox("Load a world first.", "No world loaded", wxOK | wxICON_WARNING, this);
         return;
     }
-    wxMessageBox("OBJ export UI is not yet wired up in the wxWidgets build.\n"
-                 "Use the Windows build or the command-line (headless) mode.",
-                 "Not implemented", wxOK | wxICON_INFORMATION, this);
+
+    // Get current selection bounds
+    int on = 0;
+    int minx = 0, miny = 0, minz = 0, maxx = 0, maxy = 0, maxz = 0;
+    GetHighlightState(&on, &minx, &miny, &minz, &maxx, &maxy, &maxz, gMinHeight);
+    if (!on) {
+        wxMessageBox("Please right-click drag on the map to select a region first.",
+                     "No selection", wxOK | wxICON_WARNING, this);
+        return;
+    }
+
+    // Pre-fill bounds into persistent settings
+    gExportSettings.minx = minx; gExportSettings.miny = miny; gExportSettings.minz = minz;
+    gExportSettings.maxx = maxx; gExportSettings.maxy = maxy; gExportSettings.maxz = maxz;
+
+    if (doExportDialog(this, gExportSettings, minx, miny, minz, maxx, maxy, maxz) != wxID_OK)
+        return;
+
+    // Build ExportFileData from dialog settings
+    static ExportFileData efd = {};
+    efd.fileType = gExportSettings.fileType;
+    efd.minxVal = gExportSettings.minx; efd.minyVal = gExportSettings.miny; efd.minzVal = gExportSettings.minz;
+    efd.maxxVal = gExportSettings.maxx; efd.maxyVal = gExportSettings.maxy; efd.maxzVal = gExportSettings.maxz;
+    efd.chkCenterModel = gExportSettings.centerModel ? 1 : 0;
+    for (int t = 0; t < FILE_TYPE_TOTAL; t++) efd.chkMakeZUp[t] = gExportSettings.zUp ? 1 : 0;
+    // material radio buttons
+    for (int t = 0; t < FILE_TYPE_TOTAL; t++) {
+        efd.radioExportNoMaterials[t]   = (gExportSettings.materialType == 0) ? 1 : 0;
+        efd.radioExportMtlColors[t]     = (gExportSettings.materialType == 1) ? 1 : 0;
+        efd.radioExportSolidTexture[t]  = 0;
+        efd.radioExportFullTexture[t]   = (gExportSettings.materialType == 2) ? 1 : 0;
+        efd.radioExportTileTextures[t]  = 0;
+    }
+    efd.blockSizeVal[efd.fileType] = 1.0f;
+    efd.chkCreateModelFiles[efd.fileType] = 1;  // keep files (no ZIP for now)
+    efd.chkCreateZip[efd.fileType] = 0;
+    efd.chkBlockFacesAtBorders = 1;
+    efd.chkBiome = 0;
+    efd.tileDirString[0] = '\0';
+    efd.chkTextureRGB = 1; efd.chkTextureA = 1; efd.chkTextureRGBA = 1;
+    efd.radioScaleByBlock = 1;
+
+    // Set export flags on gOptions
+    gOptions.pEFD = &efd;
+    gOptions.exportFlags = 0;
+    gOptions.saveFilterFlags = BLF_WHOLE | BLF_ALMOST_WHOLE | BLF_STAIRS | BLF_HALF |
+        BLF_MIDDLER | BLF_BILLBOARD | BLF_PANE | BLF_FLATTEN | BLF_FLATTEN_SMALL;
+
+    if (gExportSettings.materialType == 1)
+        gOptions.exportFlags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_OBJ_SEPARATE_TYPES |
+                                EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK | EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
+    else if (gExportSettings.materialType == 2)
+        gOptions.exportFlags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_TEXTURE_IMAGES |
+                                EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
+
+    // center model and z-up are handled via pEFD fields, not exportFlags
+
+    // Exe/bundle directory for texture lookup
+    wchar_t curDir[MAX_PATH_AND_FILE];
+    wxFileName exeFN(wxStandardPaths::Get().GetExecutablePath());
+    mbstowcs(curDir, exeFN.GetPath().utf8_str(), MAX_PATH_AND_FILE);
+
+    // Biome/group state
+    static int userSelectedBiome = -1, biomeIndex = -1;
+    static int groupCount = 0, groupCountSize = 10, groupCountArray[10] = {};
+
+    // Quick I/O probe: can we create a file in the chosen directory at all?
+    {
+        char probePath[MAX_PATH_AND_FILE];
+        wcstombs(probePath, gExportSettings.outputPath, sizeof(probePath));
+        FILE* probe = fopen(probePath, "wb");
+        if (!probe) {
+            wxMessageBox(wxString::Format(
+                "Cannot create file — check the path and permissions.\nPath: %s\nerrno: %d (%s)",
+                probePath, errno, strerror(errno)),
+                "Export pre-check failed", wxOK | wxICON_ERROR, this);
+            return;
+        }
+        fclose(probe);
+        remove(probePath);  // clean up test file
+    }
+
+    FileList outputFileList;
+    outputFileList.count = 0;
+    for (int i = 0; i < MAX_OUTPUT_FILES; i++) outputFileList.name[i] = nullptr;
+
+    int errCode = SaveVolume(gExportSettings.outputPath, efd.fileType,
+        &gOptions, &gWorldGuide, curDir,
+        efd.minxVal, efd.minyVal, efd.minzVal,
+        efd.maxxVal, efd.maxyVal, efd.maxzVal,
+        gMinHeight, gMaxHeight,
+        nullptr /*progress*/, gSelectTerrainPathAndName, (wchar_t*)L"",
+        &outputFileList,
+        13, 0, gVersionID,
+        nullptr /*changeBlock*/, 16 /*instanceChunkSize*/,
+        userSelectedBiome, biomeIndex,
+        groupCount, groupCountSize, groupCountArray);
+
+    if (errCode == MW_NO_ERROR || errCode < MW_BEGIN_ERRORS) {
+        // Build message before freeing the list
+        wxString msg = "Export complete.";
+        if (outputFileList.count > 0) {
+            for (int i = 0; i < outputFileList.count; i++) {
+                if (outputFileList.name[i]) {
+                    char outPath[MAX_PATH_AND_FILE];
+                    wcstombs(outPath, outputFileList.name[i], sizeof(outPath));
+                    msg += "\n" + wxString::FromUTF8(outPath);
+                }
+            }
+        } else {
+            char outPath[MAX_PATH_AND_FILE] = {};
+            wcstombs(outPath, gExportSettings.outputPath, sizeof(outPath));
+            msg += "\n(expected: " + wxString::FromUTF8(outPath) + ")";
+        }
+        wxMessageBox(msg, "Export done", wxOK | wxICON_INFORMATION, this);
+    } else {
+        // Show path even on failure so user can diagnose
+        char attemptedPath[MAX_PATH_AND_FILE] = {};
+        wcstombs(attemptedPath, gExportSettings.outputPath, sizeof(attemptedPath));
+        wxMessageBox(wxString::Format("Export failed (error %d).\nAttempted path: %s",
+                     errCode, attemptedPath),
+                     "Export error", wxOK | wxICON_ERROR, this);
+    }
+
+    // Free file list
+    for (int i = 0; i < outputFileList.count; i++) free(outputFileList.name[i]);
 }
 
 void MinewaysFrame::OnQuit(wxCommandEvent&) { Close(true); }
@@ -433,6 +724,8 @@ void MinewaysFrame::LoadWorldFromDir(const wxString& dir)
     gMinecraftVersion = DATA_VERSION_TO_RELEASE_NUMBER(gVersionID);
     gMinHeight = ZERO_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
     gMaxHeight = MAX_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
+    gWorldGuide.minHeight = gMinHeight;
+    gWorldGuide.maxHeight = gMaxHeight;
 
     // Center view on spawn
     gCurX = (double)spawnX;

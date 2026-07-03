@@ -269,6 +269,15 @@ static inline FILE* _mwPortaCreateW(const wchar_t* wpath)
 {
     char path[4096];
     wcstombs(path, wpath, sizeof(path));
+    // Expand leading ~/ in case caller didn't (fopen won't do it)
+    if (path[0] == '~' && (path[1] == '/' || path[1] == '\0')) {
+        const char* home = getenv("HOME");
+        if (home) {
+            char expanded[4096];
+            snprintf(expanded, sizeof(expanded), "%s%s", home, path + 1);
+            return fopen(expanded, "wb");
+        }
+    }
     return fopen(path, "wb");
 }
 

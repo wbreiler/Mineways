@@ -22,25 +22,26 @@ Items are roughly ordered by dependency (foundations first).
 
 ## Export
 
-- [ ] Port Export / Print dialog (`Win/ExportPrint.cpp`, ~1600 lines) to `wxDialog`
-- [ ] Wire `File > Export Model` to the ported dialog + `SaveVolume()`
-- [ ] Schematic (.schem) import: wire `loadSpongeSchematic` path in `LoadWorldFromDir`
-- [ ] Save/restore last export path via `wxConfig`
+- [x] Port Export / Print dialog → lean `ExportDialog.cpp` (~200 lines); wires to `SaveVolume()`
+- [x] Wire `File > Export Model` to the ported dialog + `SaveVolume()`
+- [x] Schematic (.schem) import: `LoadSchematicFile()` wired into `OnOpenFile`; handles both legacy and Sponge
+- [x] Save/restore last export path via `wxConfig`
 
 ## Culling Schemes
 
-- [ ] Port `Win/CullingSchemes.cpp` registry calls to `wxConfig` (plist on macOS)
-- [ ] Port Culling Scheme editor dialog → `wxDialog` + `wxListCtrl` (replace `CullingStubs.cpp`)
+- [x] Port `Win/CullingSchemes.cpp` → `Mac/MacCullingSchemes.cpp` with `wxConfig` persistence
+- [x] Port editor dialog → `wxDialog` + `wxCheckListBox` with name/filter/Hide-All/Show-All
 
 ## Persistence (wxConfig)
 
-- [ ] Save/restore: last world path, zoom level, cursor X/Z
-- [ ] Save/restore: terrain file path
-- [ ] Save/restore: export settings (`ExportFileData`)
-- [ ] Save/restore: recent exports submenu (up to 5 entries)
+- [x] Save/restore: last world path, zoom level, cursor X/Z
+- [x] Save/restore: terrain file path
+- [x] Save/restore: last export path
+- [ ] Save/restore: full export settings (`ExportFileData`) — add when options matter
+- [ ] Save/restore: recent exports submenu (up to 5 entries) — add when needed
 
 ## App Packaging
 
-- [ ] Bundle as `.app` with `Info.plist` and icon
-- [ ] Locate `terrainExt.png` relative to bundle `Resources/` directory
-- [ ] Custom terrain file picker (`File > Choose Terrain File`)
+- [x] Bundle as `.app` with `Info.plist` and icon (`make app` target)
+- [x] Locate `terrainExt.png` relative to bundle `Resources/` directory (GetResourcesDir() with exe-dir fallback)
+- [x] Custom terrain file picker (`File > Choose Terrain File`)

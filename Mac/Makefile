@@ -42,15 +42,18 @@ GUI_SRCS  := MinewaysApp.cpp \
              MinewaysFrame.cpp \
              MapPanel.cpp \
              LocationDialog.cpp \
-             CullingStubs.cpp
+             ExportDialog.cpp \
+             MacCullingSchemes.cpp
 
 CORE_OBJS := $(patsubst $(SRC_DIR)/%.cpp, %.o, $(CORE_SRCS))
 GUI_OBJS  := $(patsubst %.cpp, %.o, $(GUI_SRCS))
 ALL_OBJS  := $(CORE_OBJS) $(GUI_OBJS)
 
 TARGET    := mineways
+APP_NAME  := Mineways.app
+APP_CONTENTS := $(APP_NAME)/Contents
 
-.PHONY: all clean
+.PHONY: all app clean
 
 all: $(TARGET)
 
@@ -58,25 +61,40 @@ $(TARGET): $(ALL_OBJS)
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LIBS)
 	@echo "Built $(TARGET)"
 
-# Core files: base flags only
-%.o: $(SRC_DIR)/%.cpp
+app: $(TARGET)
+	rm -rf $(APP_NAME)
+	mkdir -p $(APP_CONTENTS)/MacOS $(APP_CONTENTS)/Resources
+	cp $(TARGET) $(APP_CONTENTS)/MacOS/
+	cp Info.plist $(APP_CONTENTS)/
+	cp mineways.icns $(APP_CONTENTS)/Resources/
+	@if [ -f terrainExt.png ]; then cp terrainExt.png $(APP_CONTENTS)/Resources/; echo "Bundled terrainExt.png"; fi
+	@if [ -f ../terrainExt.png ]; then cp ../terrainExt.png $(APP_CONTENTS)/Resources/; echo "Bundled terrainExt.png from repo root"; fi
+	@echo "Built $(APP_NAME)"
+
+COMPAT_H := compat.h
+
+# Core files: base flags only; compat.h is force-included so all core objects depend on it
+%.o: $(SRC_DIR)/%.cpp $(COMPAT_H)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # GUI files: base + wx flags (explicit pattern rules override the core rule above)
-MinewaysApp.o: MinewaysApp.cpp
+MinewaysApp.o: MinewaysApp.cpp $(COMPAT_H)
 	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
-MinewaysFrame.o: MinewaysFrame.cpp
+MinewaysFrame.o: MinewaysFrame.cpp $(COMPAT_H)
 	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
-MapPanel.o: MapPanel.cpp
+MapPanel.o: MapPanel.cpp $(COMPAT_H)
 	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
-LocationDialog.o: LocationDialog.cpp
+LocationDialog.o: LocationDialog.cpp $(COMPAT_H)
 	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
-CullingStubs.o: CullingStubs.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+ExportDialog.o: ExportDialog.cpp $(COMPAT_H)
+	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
+
+MacCullingSchemes.o: MacCullingSchemes.cpp $(COMPAT_H)
+	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
 clean:
 	rm -f *.o $(TARGET)
