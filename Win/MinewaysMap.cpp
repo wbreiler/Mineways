@@ -8008,8 +8008,8 @@ WorldBlock* LoadBlock(WorldGuide* pWorldGuide, int cx, int cz, int mcVersion, in
         // if directory starts with /, this is [Block Test World], a synthetic test world
         // made by the testBlock() method.
         int x, z;
-        //int yoff = -ZERO_WORLD_HEIGHT(versionID, mcVersion);
-        int yoff = block->minHeight;
+        // yoff converts surface world-Y (63) to a 0-based array index: array_idx = world_y - minHeight
+        int yoff = -block->minHeight;
         int bedrockHeight = 60 + yoff;      // cppcheck-suppress 398
         int grassHeight = 62 + yoff;
         int blockHeight = 63 + yoff;
@@ -8018,10 +8018,10 @@ WorldBlock* LoadBlock(WorldGuide* pWorldGuide, int cx, int cz, int mcVersion, in
         // - higher is just more inefficient
         block->maxFilledSectionHeight = 79 + yoff;
 
-        memset(block->grid, 0, 16 * 16 * block->maxHeight);
-        memset(block->data, 0, 16 * 16 * block->maxHeight);
+        memset(block->grid, 0, 16 * 16 * block->heightAlloc);
+        memset(block->data, 0, 16 * 16 * block->heightAlloc);
         memset(block->biome, 1, 16 * 16);
-        memset(block->light, 0xff, 16 * 16 * block->maxHeight/2);
+        memset(block->light, 0xff, 16 * 16 * block->heightAlloc/2);
         block->renderhilitID = 0;
 
         if (type >= 0 && type < NUM_BLOCKS_DEFINED && cz >= 0 && cz < 8)
