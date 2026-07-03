@@ -70,15 +70,43 @@ whatever file type was current, and written back to whichever file type is
 selected at OK time. Windows reloads these live. Upgrade path: bind
 `m_typeChoice`'s selection-changed event to re-run `LoadFromEfd()`.
 
-Not done: progress bar / cancel button during export (Windows shows one;
-Mac still passes `nullptr` for the progress callback — safe, confirmed via
-`UPDATE_STATUS`'s null-check, but no progress UI for long exports).
+### Medium-priority items — done (2026-07-03)
+
+- [x] Export progress bar: `Mac/MinewaysFrame.cpp` now passes a real
+      `ExportProgressCB` (was `nullptr`) into `SaveVolume()`, driving a
+      `wxProgressDialog` shown for the duration of the export. No
+      `wxPD_CAN_ABORT` — verified Windows has no mid-export cancellation
+      mechanism either (`updateProgress` just paints a status-bar gauge;
+      nothing in `ObjFileManip.cpp` polls a cancel flag), so a Cancel
+      button would be a false promise. Matches Windows' `-999.0f` sentinel
+      convention (update message only, leave the bar position alone).
+- [x] Full `ExportFileData` persistence: `SaveExportFileData`/
+      `LoadExportFileData` hex-encode/decode the whole struct into
+      `wxConfig` (same idiom as `MacCullingSchemes.cpp`'s `culled[]`
+      persistence), guarded by a stored `sizeof(ExportFileData)` so a
+      struct-layout change from a future build can't corrupt-load into a
+      live struct — falls back to the `InitViewExportData` preset instead.
+      Verified with a standalone round-trip test (byte-identical via
+      `memcmp`, built and torn down during development, not checked in).
+
+**Recent Exports turned out to be a different feature than assumed** —
+traced through `Win/Mineways.cpp`'s `IDM_RECENT_EXPORT_BASE` handler
+(~line 1923-1971): clicking a recent-export entry doesn't re-run an export
+to that path, it re-*imports*/reopens that file (as a world if it's a
+schematic, otherwise via the same machinery as File > Import Settings).
+That machinery (`runImportOrScript`, `gImportFile`) doesn't exist on Mac at
+all yet, so implementing this properly means building Import Settings
+first. Left in the backlog below rather than half-implementing a
+"re-export" shortcut that isn't what Windows actually does.
 
 ### Backlog (lower priority / optional)
 
 - [ ] File menu: Reload World, Choose Terrain File history submenu,
-      Download Terrain Files, Import Settings (Ctrl+I), Export Map (2D
-      image, Ctrl+M), Repeat Export (Ctrl+X)
+      Download Terrain Files, Import Settings (Ctrl+I — prerequisite for
+      Recent Exports, see above), Export Map (2D image, Ctrl+M), Repeat
+      Export (Ctrl+X)
+- [ ] Recent Exports submenu (`IDM_RECENT_EXPORT_BASE`, up to 5 entries) —
+      blocked on Import Settings, see above
 - [ ] Sketchfab publish integration (Upload/Publish dialogs) — no Mac
       equivalent at all
 - [ ] World Information dialog (name/version/spawn/player coords)
@@ -131,8 +159,8 @@ Mac still passes `nullptr` for the progress callback — safe, confirmed via
 - [x] Save/restore: last world path, zoom level, cursor X/Z
 - [x] Save/restore: terrain file path
 - [x] Save/restore: last export path
-- [ ] Save/restore: full export settings (`ExportFileData`) — add when options matter
-- [ ] Save/restore: recent exports submenu (up to 5 entries) — add when needed
+- [x] Save/restore: full export settings (`ExportFileData`)
+- [ ] Save/restore: recent exports submenu (up to 5 entries) — blocked on Import Settings
 
 ## App Packaging
 

@@ -4,6 +4,7 @@
 #include <wx/config.h>
 #include <wx/stdpaths.h>
 #include <wx/filename.h>
+#include <wx/progdlg.h>
 #include "MinewaysFrame.h"
 #include "MapPanel.h"
 #include "LocationDialog.h"
@@ -80,6 +81,56 @@ static void splitPath(const wchar_t* pathAndName, wchar_t* dir, wchar_t* name)
 
 // Progress callback stub (no UI progress for now)
 static void progressCB(float /*p*/, wchar_t* /*buf*/) {}
+
+// Persist the full export dialog settings across launches, as a hex-encoded raw byte
+// blob (same idiom as MacCullingSchemes.cpp's culled[] persistence). A "size" key guards
+// against loading a blob written by a build with a different ExportFileData layout.
+static void SaveExportFileData(const ExportFileData& e)
+{
+    wxConfig cfg("Mineways");
+    cfg.Write("exportFileDataSize", (long)sizeof(ExportFileData));
+    wxString hex;
+    hex.Alloc(sizeof(ExportFileData) * 2);
+    const unsigned char* bytes = (const unsigned char*)&e;
+    for (size_t i = 0; i < sizeof(ExportFileData); i++)
+        hex += wxString::Format("%02x", bytes[i]);
+    cfg.Write("exportFileData", hex);
+}
+
+static bool LoadExportFileData(ExportFileData& e)
+{
+    wxConfig cfg("Mineways");
+    long savedSize = 0;
+    wxString hex;
+    if (!cfg.Read("exportFileDataSize", &savedSize) || savedSize != (long)sizeof(ExportFileData))
+        return false;
+    if (!cfg.Read("exportFileData", &hex) || hex.length() != sizeof(ExportFileData) * 2)
+        return false;
+    unsigned char* bytes = (unsigned char*)&e;
+    for (size_t i = 0; i < sizeof(ExportFileData); i++) {
+        unsigned long v = 0;
+        if (!hex.Mid(2 * i, 2).ToULong(&v, 16)) return false;
+        bytes[i] = (unsigned char)v;
+    }
+    return true;
+}
+
+// Export progress callback, mirroring Win/Mineways.cpp's updateProgress(): SaveVolume
+// passes progress < 0 (e.g. -999.0f) to mean "update the message only, leave the bar
+// position alone" — Windows has no export-cancel mechanism either, so this is a plain
+// indicator (no wxPD_CAN_ABORT), not a real cancel button.
+static wxProgressDialog* gExportProgressDlg = nullptr;
+static int gExportProgressLastValue = 0;
+static wxString gExportProgressLastMsg;
+static void ExportProgressCB(float progress, wchar_t* buf)
+{
+    if (!gExportProgressDlg) return;
+    if (progress >= 0.0f)
+        gExportProgressLastValue = (int)wxMax(0.0f, wxMin(100.0f, progress * 100.0f));
+    if (buf && wcslen(buf) > 0)
+        gExportProgressLastMsg = wxString(buf);
+    gExportProgressDlg->Update(gExportProgressLastValue, gExportProgressLastMsg);
+}
 
 // Returns 0 on success, non-zero on error (mirrors Win loadSchematic / loadSpongeSchematic).
 static int LoadSchematicFile(const wchar_t* pathAndFile, bool isSponge)
@@ -244,6 +295,7 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
         savesDir = cfgSaves;
     if (cfg.Read("exportPath", &cfgExportPath))
         mbstowcs(gExportPath, cfgExportPath.utf8_str(), 4096);
+    LoadExportFileData(gEfd);   // falls back to the InitViewExportData preset above if absent/stale
     gCurX = cfg.ReadDouble("curX", 0.0);
     gCurZ = cfg.ReadDouble("curZ", 0.0);
     gCurScale = cfg.ReadDouble("curScale", 1.0);
@@ -311,6 +363,7 @@ MinewaysFrame::~MinewaysFrame()
         wcstombs(buf, gExportPath, sizeof(buf));
         cfg.Write("exportPath", wxString::FromUTF8(buf));
     }
+    SaveExportFileData(gEfd);
     cfg.Write("curX",     gCurX);
     cfg.Write("curZ",     gCurZ);
     cfg.Write("curScale", gCurScale);
@@ -752,17 +805,29 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
     outputFileList.count = 0;
     for (int i = 0; i < MAX_OUTPUT_FILES; i++) outputFileList.name[i] = nullptr;
 
+    // SaveVolume() runs synchronously on the main thread; wxProgressDialog::Update()
+    // pumps enough of the event loop to keep the bar and window responsive-looking
+    // during that blocking call. No wxPD_CAN_ABORT: like Windows, there is no
+    // mid-export cancellation mechanism in the underlying export code.
+    gExportProgressLastValue = 0;
+    gExportProgressLastMsg = "Exporting...";
+    wxProgressDialog progressDlg("Exporting", gExportProgressLastMsg, 100, this,
+                                 wxPD_APP_MODAL | wxPD_ELAPSED_TIME | wxPD_AUTO_HIDE);
+    gExportProgressDlg = &progressDlg;
+
     int errCode = SaveVolume(gExportPath, gEfd.fileType,
         &gOptions, &gWorldGuide, curDir,
         gEfd.minxVal, gEfd.minyVal, gEfd.minzVal,
         gEfd.maxxVal, gEfd.maxyVal, gEfd.maxzVal,
         gMinHeight, gMaxHeight,
-        nullptr /*progress*/, gSelectTerrainPathAndName, (wchar_t*)getSelectedCullingSchemeW(),
+        ExportProgressCB, gSelectTerrainPathAndName, (wchar_t*)getSelectedCullingSchemeW(),
         &outputFileList,
         13, 0, gVersionID,
         nullptr /*changeBlock*/, 16 /*instanceChunkSize*/,
         userSelectedBiome, biomeIndex,
         groupCount, groupCountSize, groupCountArray);
+
+    gExportProgressDlg = nullptr;
 
     if (errCode >= MW_BEGIN_NOTHING_TO_DO && errCode < MW_BEGIN_ERRORS) {
         // Codes in this range (e.g. MW_NO_BLOCKS_FOUND, MW_ALL_BLOCKS_DELETED) mean
