@@ -2,6 +2,8 @@
 #include <wx/wx.h>
 #include "MapPanel.h"
 
+struct ExportFileData;   // full definition comes from stdafx.h -> blockInfo.h; forward decl is enough here
+
 class MinewaysFrame : public wxFrame {
 public:
     explicit MinewaysFrame(wxWindow* parent);
@@ -21,6 +23,7 @@ private:
 
     void BuildMenu();
     void LoadWorldFromDir(const wxString& dir);
+    void RunExport(ExportFileData& efd, const wchar_t* outputPath);
 
     // File menu
     void OnOpenWorld(wxCommandEvent&);
@@ -44,8 +47,13 @@ private:
     void OnToggleWorldTypeBit(wxCommandEvent&);   // Show all/biomes/elevation/lighting/cave/obscured/water/grid
     void OnZoomOutFurther(wxCommandEvent&);
     void OnSelectAll(wxCommandEvent&);
+    void OnReloadWorld(wxCommandEvent&);
+    void OnRepeatExport(wxCommandEvent&);
+    void OnDownloadTerrainFiles(wxCommandEvent&);
     // Help menu
     void OnAbout(wxCommandEvent&);
+    void OnHelpURL(wxCommandEvent&);   // keyboard/troubleshooting/documentation/report-a-bug (same handler, ID picks URL)
+    void OnGiveMoreExportMemory(wxCommandEvent&);
 
     wxDECLARE_EVENT_TABLE();
 };
@@ -78,6 +86,15 @@ enum {
     ID_MAPGRID,
     ID_ZOOMOUTFURTHER,
     ID_SELECT_ALL,
+    ID_RELOAD_WORLD,
+    ID_REPEAT_EXPORT,
+    ID_DOWNLOAD_TERRAIN_FILES,
+    // Help menu
+    ID_HELP_KEYBOARD,
+    ID_HELP_TROUBLESHOOTING,
+    ID_HELP_DOCUMENTATION,
+    ID_HELP_REPORT_BUG,
+    ID_HELP_GIVE_MORE_MEMORY,
     // Dynamic world-list items occupy [ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE+MAX_WORLDS)
     ID_WORLD_ITEM_BASE = wxID_HIGHEST + 100,
     MAX_WORLDS         = 50,

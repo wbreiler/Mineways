@@ -99,23 +99,51 @@ all yet, so implementing this properly means building Import Settings
 first. Left in the backlog below rather than half-implementing a
 "re-export" shortcut that isn't what Windows actually does.
 
+### Small polish batch — done (2026-07-03)
+
+- [x] About box: matches `Win/Mineways.rc`'s `IDD_ABOUTBOX` static text
+      verbatim (version, copyright, "works with Minecraft 1.4-1.19",
+      minutor credit, mineways.com link). Skipped the `IDI_MINEWAYS` icon
+      bitmap itself — wx doesn't decode `.icns` out of the box and it's
+      cosmetic only.
+- [x] Help menu: keyboard (F1), troubleshooting, documentation, report a
+      bug (all `wxLaunchDefaultBrowser` to the same URLs Windows'
+      `ShellExecute` calls use), plus "Give more export memory!" as a
+      checkable item wired to `gOptions.moreExportMemory` +
+      `MinimizeCacheBlocks()` (shared code, already compiled in).
+- [x] File menu: Reload World (`R`, reloads `gWorldGuide.world` via the
+      existing `LoadWorldFromDir`), Download Terrain Files (browser link),
+      Repeat Export (`Ctrl+X`, re-runs the last export's `gEfd`/
+      `gExportPath` without reopening the dialog — required extracting a
+      `RunExport()` out of `OnExportOBJ` so both share it).
+- [x] Added the one missing accelerator found by diffing against
+      `Win/Mineways.rc`'s `IDC_MINEWAYS ACCELERATORS` table: `Ctrl+T` for
+      Choose Terrain File.
+
+**Still open, lower value, found while diffing the accelerator table**:
+- Jump to Model (F4) — Windows centers the view on the last-exported
+  model's bounds; Mac has no equivalent since nothing currently tracks
+  "last export's bounding box" as view-navigable state (`gEfd.minxVal`
+  etc. are there, but wiring a jump-to-center from them is a small
+  standalone task, not started)
+- Export Map (Ctrl+M) — save the current 2D map view as a PNG; the map
+  bitmap (`gMapBits`) and PNG writer (`rwpng`/`lodepng`) are already
+  available, just not wired to a menu item
+- Choose Terrain File **history submenu** (Windows remembers a few recent
+  terrain files); Mac's Choose Terrain File is a single always-browse
+  action, no history
+- `/` and `?` as extra aliases for Help: keyboard (F1 already covers it)
+
 ### Backlog (lower priority / optional)
 
-- [ ] File menu: Reload World, Choose Terrain File history submenu,
-      Download Terrain Files, Import Settings (Ctrl+I — prerequisite for
-      Recent Exports, see above), Export Map (2D image, Ctrl+M), Repeat
-      Export (Ctrl+X)
+- [ ] Import Settings (Ctrl+I) — prerequisite for Recent Exports, see above
 - [ ] Recent Exports submenu (`IDM_RECENT_EXPORT_BASE`, up to 5 entries) —
       blocked on Import Settings, see above
 - [ ] Sketchfab publish integration (Upload/Publish dialogs) — no Mac
-      equivalent at all
-- [ ] World Information dialog (name/version/spawn/player coords)
-- [ ] About box: match Windows content (icon, version, copyright,
-      Minecraft-version compatibility line, credits, website link)
-- [ ] Help menu: keyboard shortcuts reference (F1), troubleshooting,
-      documentation, report a bug, "give more export memory"
-- [ ] Remaining keyboard accelerators, added alongside each feature above
-      as it lands (F2-F8, single-letter view toggles, etc.)
+      equivalent at all — needs a Sketchfab account/API token, likely out
+      of scope for unattended work
+- [ ] Jump to Model (F4), Export Map (Ctrl+M), terrain-file history
+      submenu — see notes above
 
 ### At parity (no work needed)
 

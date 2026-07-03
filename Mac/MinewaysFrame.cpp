@@ -255,6 +255,14 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_MAPGRID,          MinewaysFrame::OnToggleWorldTypeBit)
     EVT_MENU(ID_ZOOMOUTFURTHER,   MinewaysFrame::OnZoomOutFurther)
     EVT_MENU(ID_SELECT_ALL,       MinewaysFrame::OnSelectAll)
+    EVT_MENU(ID_RELOAD_WORLD,     MinewaysFrame::OnReloadWorld)
+    EVT_MENU(ID_REPEAT_EXPORT,    MinewaysFrame::OnRepeatExport)
+    EVT_MENU(ID_DOWNLOAD_TERRAIN_FILES, MinewaysFrame::OnDownloadTerrainFiles)
+    EVT_MENU(ID_HELP_KEYBOARD,         MinewaysFrame::OnHelpURL)
+    EVT_MENU(ID_HELP_TROUBLESHOOTING,  MinewaysFrame::OnHelpURL)
+    EVT_MENU(ID_HELP_DOCUMENTATION,    MinewaysFrame::OnHelpURL)
+    EVT_MENU(ID_HELP_REPORT_BUG,       MinewaysFrame::OnHelpURL)
+    EVT_MENU(ID_HELP_GIVE_MORE_MEMORY, MinewaysFrame::OnGiveMoreExportMemory)
     EVT_MENU_RANGE(ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE + MAX_WORLDS - 1,
                    MinewaysFrame::OnWorldMenuItem)
 wxEND_EVENT_TABLE()
@@ -434,18 +442,24 @@ void MinewaysFrame::BuildMenu()
         }
     }
     fileMenu->AppendSubMenu(worldsMenu, "Open World");
+    fileMenu->Append(ID_RELOAD_WORLD, "Reload World\tR",
+                     "Reload the current world (picks up changes made outside Mineways)");
 
     fileMenu->Append(ID_OPEN_FILE,  "Open level.dat or Schematic...\tCtrl+O",
                      "Open a level.dat or .schematic/.schem file");
     fileMenu->Append(ID_GO_TO_LOCATION, "Go To Location...\tCtrl+G",
                      "Jump map view to a specific X,Z coordinate");
-    fileMenu->Append(ID_CHOOSE_TERRAIN, "Choose Terrain File...",
+    fileMenu->Append(ID_CHOOSE_TERRAIN, "Choose Terrain File...\tCtrl+T",
                      "Select a custom terrainExt*.png texture atlas");
+    fileMenu->Append(ID_DOWNLOAD_TERRAIN_FILES, "Download Terrain Files...",
+                     "Open the Mineways textures page in your browser");
     fileMenu->Append(ID_CULLING_SCHEMES, "Culling Schemes...",
                      "Manage block culling schemes (hide blocks from map and export)");
     fileMenu->AppendSeparator();
     fileMenu->Append(ID_EXPORT_OBJ, "Export Model...\tCtrl+E",
                      "Export selected region to OBJ");
+    fileMenu->Append(ID_REPEAT_EXPORT, "Repeat Export\tCtrl+X",
+                     "Re-export using the last output path and settings, without reopening the dialog");
     fileMenu->AppendSeparator();
     fileMenu->Append(wxID_EXIT, "Quit\tCtrl+Q");
 
@@ -475,7 +489,14 @@ void MinewaysFrame::BuildMenu()
     viewMenu->AppendCheckItem(ID_ZOOMOUTFURTHER, "Zoom out further");
 
     wxMenu* helpMenu = new wxMenu;
+    helpMenu->Append(ID_HELP_KEYBOARD, "Help: keyboard\tF1");
+    helpMenu->Append(ID_HELP_TROUBLESHOOTING, "Help: troubleshooting");
+    helpMenu->Append(ID_HELP_DOCUMENTATION, "Help: documentation");
+    helpMenu->Append(ID_HELP_REPORT_BUG, "Report a bug");
+    helpMenu->AppendSeparator();
     helpMenu->Append(wxID_ABOUT, "About Mineways");
+    helpMenu->AppendSeparator();
+    helpMenu->AppendCheckItem(ID_HELP_GIVE_MORE_MEMORY, "Give more export memory!");
 
     mb->Append(fileMenu, "&File");
     mb->Append(viewMenu, "&View");
@@ -768,9 +789,16 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
     if (doExportDialog(this, gEfd, gExportPath, 4096, minx, miny, minz, maxx, maxy, maxz) != wxID_OK)
         return;
 
-    gOptions.pEFD = &gEfd;
-    gOptions.exportFlags = BuildExportFlags(gEfd, this);
-    gOptions.saveFilterFlags = gEfd.chkExportAll
+    RunExport(gEfd, gExportPath);
+}
+
+// Shared by OnExportOBJ (after the dialog returns OK) and OnRepeatExport/Ctrl+X
+// (reuses the last-used efd/path without reopening the dialog).
+void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
+{
+    gOptions.pEFD = &efd;
+    gOptions.exportFlags = BuildExportFlags(efd, this);
+    gOptions.saveFilterFlags = efd.chkExportAll
         ? (BLF_WHOLE | BLF_ALMOST_WHOLE | BLF_STAIRS | BLF_HALF | BLF_MIDDLER | BLF_BILLBOARD | BLF_PANE |
            BLF_FLATTEN | BLF_FLATTEN_SMALL | BLF_SMALL_MIDDLER | BLF_SMALL_BILLBOARD)
         : (BLF_WHOLE | BLF_ALMOST_WHOLE | BLF_STAIRS | BLF_HALF | BLF_MIDDLER | BLF_BILLBOARD | BLF_PANE |
@@ -788,7 +816,7 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
     // Quick I/O probe: can we create a file in the chosen directory at all?
     {
         char probePath[MAX_PATH_AND_FILE];
-        wcstombs(probePath, gExportPath, sizeof(probePath));
+        wcstombs(probePath, outputPath, sizeof(probePath));
         FILE* probe = fopen(probePath, "wb");
         if (!probe) {
             wxMessageBox(wxString::Format(
@@ -815,10 +843,10 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
                                  wxPD_APP_MODAL | wxPD_ELAPSED_TIME | wxPD_AUTO_HIDE);
     gExportProgressDlg = &progressDlg;
 
-    int errCode = SaveVolume(gExportPath, gEfd.fileType,
+    int errCode = SaveVolume((wchar_t*)outputPath, efd.fileType,
         &gOptions, &gWorldGuide, curDir,
-        gEfd.minxVal, gEfd.minyVal, gEfd.minzVal,
-        gEfd.maxxVal, gEfd.maxyVal, gEfd.maxzVal,
+        efd.minxVal, efd.minyVal, efd.minzVal,
+        efd.maxxVal, efd.maxyVal, efd.maxzVal,
         gMinHeight, gMaxHeight,
         ExportProgressCB, gSelectTerrainPathAndName, (wchar_t*)getSelectedCullingSchemeW(),
         &outputFileList,
@@ -848,14 +876,14 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
             }
         } else {
             char outPath[MAX_PATH_AND_FILE] = {};
-            wcstombs(outPath, gExportPath, sizeof(outPath));
+            wcstombs(outPath, outputPath, sizeof(outPath));
             msg += "\n(expected: " + wxString::FromUTF8(outPath) + ")";
         }
         wxMessageBox(msg, "Export done", wxOK | wxICON_INFORMATION, this);
     } else {
         // Show path even on failure so user can diagnose
         char attemptedPath[MAX_PATH_AND_FILE] = {};
-        wcstombs(attemptedPath, gExportPath, sizeof(attemptedPath));
+        wcstombs(attemptedPath, outputPath, sizeof(attemptedPath));
         wxMessageBox(wxString::Format("Export failed (error %d).\nAttempted path: %s",
                      errCode, attemptedPath),
                      "Export error", wxOK | wxICON_ERROR, this);
@@ -869,10 +897,75 @@ void MinewaysFrame::OnQuit(wxCommandEvent&) { Close(true); }
 
 void MinewaysFrame::OnAbout(wxCommandEvent&)
 {
-    wxMessageBox("Mineways " MINEWAYS_VERSION_STRING "\n\n"
-                 "By Eric Haines and contributors.\n"
+    // Matches Win/Mineways.rc's IDD_ABOUTBOX static text verbatim.
+    wxMessageBox("Mineways, Version " MINEWAYS_VERSION_STRING "\n"
+                 "Copyright (c) 2011 Eric Haines\n\n"
+                 "Free and open source Minecraft model exporter.\n"
+                 "Visit http://mineways.com for docs and code.\n\n"
+                 "Works with Minecraft versions 1.4 through 1.19.\n\n"
+                 "Based on the open source program minutor,\n"
+                 "Copyright (c) 2011, Sean Kasun\n\n"
                  "wxWidgets macOS build.",
                  "About Mineways", wxOK | wxICON_INFORMATION, this);
+}
+
+// URLs match Win/Mineways.cpp's IDM_HELP_URL/ID_HELP_TROUBLESHOOTING/
+// ID_HELP_DOCUMENTATION/ID_HELP_REPORTABUG ShellExecute() calls.
+void MinewaysFrame::OnHelpURL(wxCommandEvent& e)
+{
+    wxString url;
+    switch (e.GetId()) {
+    case ID_HELP_KEYBOARD:
+        url = "https://www.realtimerendering.com/erich/minecraft/public/mineways/reference.html";
+        break;
+    case ID_HELP_TROUBLESHOOTING:
+        url = "https://www.realtimerendering.com/erich/minecraft/public/mineways/downloads.html#windowsPlatformHelp";
+        break;
+    case ID_HELP_DOCUMENTATION:
+        url = "https://www.realtimerendering.com/erich/minecraft/public/mineways/mineways.html";
+        break;
+    case ID_HELP_REPORT_BUG:
+        url = "https://www.realtimerendering.com/erich/minecraft/public/mineways/contact.html";
+        break;
+    default: return;
+    }
+    wxLaunchDefaultBrowser(url);
+}
+
+void MinewaysFrame::OnDownloadTerrainFiles(wxCommandEvent&)
+{
+    wxLaunchDefaultBrowser("https://www.realtimerendering.com/erich/minecraft/public/mineways/textures.html#dl");
+}
+
+void MinewaysFrame::OnGiveMoreExportMemory(wxCommandEvent&)
+{
+    gOptions.moreExportMemory = !gOptions.moreExportMemory;
+    if (GetMenuBar()) GetMenuBar()->Check(ID_HELP_GIVE_MORE_MEMORY, gOptions.moreExportMemory);
+    MinimizeCacheBlocks(gOptions.moreExportMemory);
+}
+
+void MinewaysFrame::OnReloadWorld(wxCommandEvent&)
+{
+    if (!gLoaded || gWorldGuide.type != WORLD_LEVEL_TYPE) {
+        wxMessageBox("You need to load a world first.", "No world loaded", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+    char buf[4096]; wcstombs(buf, gWorldGuide.world, sizeof(buf));
+    LoadWorldFromDir(wxString::FromUTF8(buf));
+}
+
+void MinewaysFrame::OnRepeatExport(wxCommandEvent&)
+{
+    if (!gLoaded) {
+        wxMessageBox("Load a world first.", "No world loaded", wxOK | wxICON_WARNING, this);
+        return;
+    }
+    if (!gExportPath[0]) {
+        wxMessageBox("No previous export to repeat — use Export Model... first.",
+                     "Nothing to repeat", wxOK | wxICON_WARNING, this);
+        return;
+    }
+    RunExport(gEfd, gExportPath);
 }
 
 // Dragging either depth slider must update the Y bound of an already-drawn
