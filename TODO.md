@@ -151,7 +151,19 @@ first. Left in the backlog below rather than half-implementing a
 
 ### Backlog (lower priority / optional)
 
-- [ ] Import Settings (Ctrl+I) — prerequisite for Recent Exports, see above
+- [ ] Import Settings (Ctrl+I) — prerequisite for Recent Exports, see above.
+      **Scoped out during the 2026-07-03 autonomous pass**: traced
+      `Win/Mineways.cpp`'s `importSettings`/`importModelFile`/
+      `readAndExecuteScript`/`interpretImportLine` — this isn't a small
+      feature. It parses the `#`-comment header Windows writes into every
+      exported OBJ/USD/VRML file (`writeStatistics`) back into a full
+      `ExportFileData`, *and* separately implements a whole batch-scripting
+      command language (`readAndExecuteScript`) for automation. Combined
+      it's 1000+ lines on Windows — comparable to or larger than the
+      Export dialog rewrite, which was its own dedicated pass. Recommend
+      treating as a dedicated future session with explicit scope
+      confirmation (e.g. "just header re-import" vs. "header + scripting
+      too"), not something to fold into incremental backlog work.
 - [ ] Recent Exports submenu (`IDM_RECENT_EXPORT_BASE`, up to 5 entries) —
       blocked on Import Settings, see above
 - [ ] Sketchfab publish integration (Upload/Publish dialogs) — no Mac
