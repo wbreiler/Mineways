@@ -57,6 +57,13 @@ static wxString gWorldDirs[MAX_WORLDS];
 static wxString gWorldDisplayNames[MAX_WORLDS];
 static int      gNumWorlds = 0;
 
+// Scanned terrainExt*.png files alongside the app bundle (parallel to gTerrainFiles
+// in Win/Mineways.cpp) — alternate texture packs shipped next to the executable,
+// not a "recently used" list.
+static wxString gTerrainFilePaths[MAX_TERRAIN_FILES];
+static wxString gTerrainFileNames[MAX_TERRAIN_FILES];
+static int      gNumTerrainFiles = 0;
+
 // Persistent export settings (survive across dialog invocations); mirrors
 // Windows' static epd/gExportViewData pattern.
 static ExportFileData gEfd = {};
@@ -233,6 +240,9 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_TEST_BLOCK_WORLD, MinewaysFrame::OnTestBlockWorld)
     EVT_MENU(ID_GO_TO_LOCATION,   MinewaysFrame::OnGoToLocation)
     EVT_MENU(ID_CHOOSE_TERRAIN,   MinewaysFrame::OnChooseTerrainFile)
+    EVT_MENU(ID_DEFAULT_TERRAIN,  MinewaysFrame::OnDefaultTerrain)
+    EVT_MENU_RANGE(ID_TERRAIN_ITEM_BASE, ID_TERRAIN_ITEM_BASE + MAX_TERRAIN_FILES - 1,
+                   MinewaysFrame::OnTerrainMenuItem)
     EVT_MENU(ID_CULLING_SCHEMES,  MinewaysFrame::OnCullingSchemes)
     EVT_MENU(ID_EXPORT_OBJ,       MinewaysFrame::OnExportOBJ)
     EVT_MENU(wxID_EXIT,           MinewaysFrame::OnQuit)
@@ -242,6 +252,7 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_VIEW_UNDOSELECTION, MinewaysFrame::OnUndoSelection)
     EVT_MENU(ID_JUMP_SPAWN,       MinewaysFrame::OnJumpSpawn)
     EVT_MENU(ID_JUMP_PLAYER,      MinewaysFrame::OnJumpPlayer)
+    EVT_MENU(ID_JUMP_MODEL,       MinewaysFrame::OnJumpModel)
     EVT_MENU(ID_VIEW_INFORMATION, MinewaysFrame::OnViewInformation)
     EVT_MENU(ID_VIEW_HELL,        MinewaysFrame::OnViewHell)
     EVT_MENU(ID_VIEW_END,         MinewaysFrame::OnViewEnd)
@@ -257,6 +268,7 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_SELECT_ALL,       MinewaysFrame::OnSelectAll)
     EVT_MENU(ID_RELOAD_WORLD,     MinewaysFrame::OnReloadWorld)
     EVT_MENU(ID_REPEAT_EXPORT,    MinewaysFrame::OnRepeatExport)
+    EVT_MENU(ID_EXPORT_MAP,       MinewaysFrame::OnExportMap)
     EVT_MENU(ID_DOWNLOAD_TERRAIN_FILES, MinewaysFrame::OnDownloadTerrainFiles)
     EVT_MENU(ID_HELP_KEYBOARD,         MinewaysFrame::OnHelpURL)
     EVT_MENU(ID_HELP_TROUBLESHOOTING,  MinewaysFrame::OnHelpURL)
@@ -419,11 +431,44 @@ static int ScanWorldSaves(const wxString& savesDir)
     return gNumWorlds;
 }
 
+// Ports Win/Mineways.cpp's loadTerrainList(): scans the app bundle's Resources dir
+// (or exe dir fallback) for terrainExt*.png alternate texture packs shipped next to
+// the executable. Excludes the _n/_r/_m/_e PBR-channel suffix files, which aren't
+// standalone terrain files themselves.
+static int ScanTerrainFiles(const wxString& dir)
+{
+    gNumTerrainFiles = 0;
+    char path[4096];
+    strncpy(path, dir.utf8_str(), sizeof(path) - 1); path[sizeof(path)-1] = '\0';
+    DIR* d = opendir(path);
+    if (!d) return 0;
+    struct dirent* de;
+    while ((de = readdir(d)) != nullptr && gNumTerrainFiles < MAX_TERRAIN_FILES) {
+        wxString name = wxString::FromUTF8(de->d_name);
+        if (!name.Lower().StartsWith("terrainext") || !name.Lower().EndsWith(".png")) continue;
+        wxString lower = name.Lower();
+        if (lower.EndsWith("_n.png") || lower.EndsWith("_r.png") ||
+            lower.EndsWith("_m.png") || lower.EndsWith("_e.png")) continue;
+
+        gTerrainFilePaths[gNumTerrainFiles] = dir + "/" + name;
+        gTerrainFileNames[gNumTerrainFiles] = name;
+        gNumTerrainFiles++;
+    }
+    closedir(d);
+    return gNumTerrainFiles;
+}
+
 void MinewaysFrame::BuildMenu()
 {
     // Scan worlds before building menu so world submenu is populated
     char defPath[4096]; wcstombs(defPath, gWorldPathDefault, sizeof(defPath));
     ScanWorldSaves(wxString::FromUTF8(defPath));
+
+    // Scan for alternate terrainExt*.png files alongside the default one
+    {
+        char terrainDirBuf[4096]; wcstombs(terrainDirBuf, gSelectTerrainDir, sizeof(terrainDirBuf));
+        ScanTerrainFiles(wxString::FromUTF8(terrainDirBuf));
+    }
 
     wxMenuBar* mb = new wxMenuBar;
 
@@ -449,8 +494,18 @@ void MinewaysFrame::BuildMenu()
                      "Open a level.dat or .schematic/.schem file");
     fileMenu->Append(ID_GO_TO_LOCATION, "Go To Location...\tCtrl+G",
                      "Jump map view to a specific X,Z coordinate");
-    fileMenu->Append(ID_CHOOSE_TERRAIN, "Choose Terrain File...\tCtrl+T",
-                     "Select a custom terrainExt*.png texture atlas");
+    // "Choose Terrain File" submenu: [default] + any terrainExt*.png packs found
+    // alongside the app bundle (Win/Mineways.cpp's loadTerrainList scans the same way).
+    wxMenu* terrainMenu = new wxMenu;
+    terrainMenu->Append(ID_DEFAULT_TERRAIN, "[default]");
+    if (gNumTerrainFiles > 0) {
+        terrainMenu->AppendSeparator();
+        for (int i = 0; i < gNumTerrainFiles; i++)
+            terrainMenu->Append(ID_TERRAIN_ITEM_BASE + i, gTerrainFileNames[i]);
+    }
+    fileMenu->AppendSubMenu(terrainMenu, "Choose Terrain File");
+    fileMenu->Append(ID_CHOOSE_TERRAIN, "Open Terrain File...\tCtrl+T",
+                     "Browse for a custom terrainExt*.png texture atlas");
     fileMenu->Append(ID_DOWNLOAD_TERRAIN_FILES, "Download Terrain Files...",
                      "Open the Mineways textures page in your browser");
     fileMenu->Append(ID_CULLING_SCHEMES, "Culling Schemes...",
@@ -460,6 +515,8 @@ void MinewaysFrame::BuildMenu()
                      "Export selected region to OBJ");
     fileMenu->Append(ID_REPEAT_EXPORT, "Repeat Export\tCtrl+X",
                      "Re-export using the last output path and settings, without reopening the dialog");
+    fileMenu->Append(ID_EXPORT_MAP, "Export Map...\tCtrl+M",
+                     "Save the selected region of the 2D map as a PNG image");
     fileMenu->AppendSeparator();
     fileMenu->Append(wxID_EXIT, "Quit\tCtrl+Q");
 
@@ -471,6 +528,7 @@ void MinewaysFrame::BuildMenu()
     viewMenu->AppendSeparator();
     viewMenu->Append(ID_JUMP_SPAWN,   "Jump to Spawn\tF2");
     viewMenu->Append(ID_JUMP_PLAYER,  "Jump to Player\tF3");
+    viewMenu->Append(ID_JUMP_MODEL,   "Jump to Model\tF4");
     viewMenu->Append(ID_VIEW_INFORMATION, "Information\tI");
     viewMenu->AppendSeparator();
     viewMenu->AppendCheckItem(ID_VIEW_HELL, "View Nether\tF5");
@@ -612,6 +670,28 @@ void MinewaysFrame::OnChooseTerrainFile(wxCommandEvent&)
     wxString path = dlg.GetPath();
     mbstowcs(gSelectTerrainPathAndName, path.utf8_str(), MAX_PATH_AND_FILE);
     splitPath(gSelectTerrainPathAndName, gSelectTerrainDir, nullptr);
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnDefaultTerrain(wxCommandEvent&)
+{
+    wxString terrainPath = wxStandardPaths::Get().GetResourcesDir() + "/terrainExt.png";
+    if (!wxFileExists(terrainPath)) {
+        wxFileName exeFN(wxStandardPaths::Get().GetExecutablePath());
+        terrainPath = exeFN.GetPath() + "/terrainExt.png";
+    }
+    mbstowcs(gSelectTerrainPathAndName, terrainPath.utf8_str(), MAX_PATH_AND_FILE);
+    splitPath(gSelectTerrainPathAndName, gSelectTerrainDir, nullptr);
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnTerrainMenuItem(wxCommandEvent& e)
+{
+    int idx = e.GetId() - ID_TERRAIN_ITEM_BASE;
+    if (idx < 0 || idx >= gNumTerrainFiles) return;
+    mbstowcs(gSelectTerrainPathAndName, gTerrainFilePaths[idx].utf8_str(), MAX_PATH_AND_FILE);
+    splitPath(gSelectTerrainPathAndName, gSelectTerrainDir, nullptr);
+    if (m_mapPanel) m_mapPanel->RedrawMap();
 }
 
 void MinewaysFrame::OnOpenFile(wxCommandEvent&)
@@ -968,6 +1048,70 @@ void MinewaysFrame::OnRepeatExport(wxCommandEvent&)
     RunExport(gEfd, gExportPath);
 }
 
+// Ports Win/Mineways.cpp's saveMapFile(): renders the selected region fresh at the
+// current zoom level via DrawMapToArray (not just a screenshot of the on-screen
+// buffer) and writes it as a PNG. Both DrawMapToArray and writepng are shared,
+// platform-independent code already compiled into the Mac binary.
+void MinewaysFrame::OnExportMap(wxCommandEvent&)
+{
+    if (!gLoaded) {
+        wxMessageBox("Load a world first.", "No world loaded", wxOK | wxICON_WARNING, this);
+        return;
+    }
+    int on, minx, miny, minz, maxx, maxy, maxz;
+    GetHighlightState(&on, &minx, &miny, &minz, &maxx, &maxy, &maxz, gMinHeight);
+    if (!on) {
+        wxMessageBox("Right-click drag on the map to select a region to export first.",
+                     "No selection", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+
+    wxFileDialog fd(this, "Export Map", "", "", "PNG image (*.png)|*.png",
+                    wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+    if (fd.ShowModal() != wxID_OK) return;
+    wxString path = fd.GetPath();
+    if (!path.Lower().EndsWith(".png")) path += ".png";
+
+    if (minx > maxx) wxSwap(minx, maxx);
+    if (minz > maxz) wxSwap(minz, maxz);
+    int w = maxx - minx + 1;
+    int h = maxz - minz + 1;
+    int zoom = (int)(gCurScale + 0.5f);
+    if (zoom < 1) zoom = 1;
+
+    progimage_info mapimage;
+    mapimage.width = zoom * w;
+    mapimage.height = zoom * h;
+    mapimage.image_data.resize((size_t)w * h * 3 * zoom * zoom, 0x0);
+
+    // Suppress the selection-rectangle overlay while rendering to the array —
+    // it's drawn from the same highlight state the interactive map uses.
+    SetHighlightState(0, minx, gTargetDepth, minz, maxx, maxy, maxz, gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_IGNORE);
+    int retCode = DrawMapToArray(&mapimage.image_data[0], &gWorldGuide, minx, minz,
+                                 maxy - gMinHeight, gMaxHeight, w, h, zoom, &gOptions, gHitsFound,
+                                 progressCB, gMinecraftVersion, gVersionID);
+    SetHighlightState(gHighlightOn, minx, gTargetDepth, minz, maxx, gCurDepth, maxz,
+                      gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_IGNORE);
+
+    if (retCode < 0) {
+        wxMessageBox("Could not render the map for export (chunk read error).",
+                     "Export Map failed", wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    wchar_t wpath[MAX_PATH_AND_FILE];
+    mbstowcs(wpath, path.utf8_str(), MAX_PATH_AND_FILE);
+    int pngResult = writepng(&mapimage, 3, wpath);
+    writepng_cleanup(&mapimage);
+
+    if (pngResult == 0)
+        wxMessageBox("Map exported to\n" + path, "Export Map done", wxOK | wxICON_INFORMATION, this);
+    else
+        wxMessageBox("Failed to write PNG file:\n" + path, "Export Map failed", wxOK | wxICON_ERROR, this);
+
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
 // Dragging either depth slider must update the Y bound of an already-drawn
 // selection, not just future ones — otherwise the selection used by Export
 // silently keeps whatever Y bound was in effect when the box was drawn,
@@ -1053,6 +1197,25 @@ void MinewaysFrame::OnJumpPlayer(wxCommandEvent&)
 {
     if (!gLoaded) return;
     gCurX = gPlayerX; gCurZ = gPlayerZ;
+    if (gOptions.worldType & HELL) { gCurX /= 8.0; gCurZ /= 8.0; }
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+// Despite the name, Windows' IDM_VIEW_JUMPTOMODEL just centers the view on the
+// current selection's midpoint (Win/Mineways.cpp:2481-2500) — not a tracked
+// "last exported model" as the name might suggest.
+void MinewaysFrame::OnJumpModel(wxCommandEvent&)
+{
+    if (!gHighlightOn) {
+        wxMessageBox("No model selected. To select a model, right-click drag on the map.",
+                     "Informational", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+    int on, minx, miny, minz, maxx, maxy, maxz;
+    GetHighlightState(&on, &minx, &miny, &minz, &maxx, &maxy, &maxz, gMinHeight);
+    if (!on) return;
+    gCurX = (minx + maxx) / 2;
+    gCurZ = (minz + maxz) / 2;
     if (gOptions.worldType & HELL) { gCurX /= 8.0; gCurZ /= 8.0; }
     if (m_mapPanel) m_mapPanel->RedrawMap();
 }

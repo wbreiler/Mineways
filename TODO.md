@@ -120,19 +120,34 @@ first. Left in the backlog below rather than half-implementing a
       `Win/Mineways.rc`'s `IDC_MINEWAYS ACCELERATORS` table: `Ctrl+T` for
       Choose Terrain File.
 
-**Still open, lower value, found while diffing the accelerator table**:
-- Jump to Model (F4) — Windows centers the view on the last-exported
-  model's bounds; Mac has no equivalent since nothing currently tracks
-  "last export's bounding box" as view-navigable state (`gEfd.minxVal`
-  etc. are there, but wiring a jump-to-center from them is a small
-  standalone task, not started)
-- Export Map (Ctrl+M) — save the current 2D map view as a PNG; the map
-  bitmap (`gMapBits`) and PNG writer (`rwpng`/`lodepng`) are already
-  available, just not wired to a menu item
-- Choose Terrain File **history submenu** (Windows remembers a few recent
-  terrain files); Mac's Choose Terrain File is a single always-browse
-  action, no history
-- `/` and `?` as extra aliases for Help: keyboard (F1 already covers it)
+### Follow-up batch — done (2026-07-03)
+
+- [x] Jump to Model (F4) — traced `Win/Mineways.cpp:2481-2500` and it's
+      simpler than the name suggests: centers the view on the *current
+      selection's* midpoint (`(minx+maxx)/2, (minz+maxz)/2`), not a
+      tracked "last exported model." `OnJumpModel` matches that exactly.
+- [x] Export Map (Ctrl+M) — ports `Win/Mineways.cpp`'s `saveMapFile()`:
+      re-renders the selected region fresh at the current zoom via
+      `DrawMapToArray` (not a screenshot of the live buffer) and writes it
+      with `writepng`. Both are shared, platform-independent code already
+      compiled into the Mac binary. Verified with a standalone headless
+      test (`DrawMapToArray` + `writepng` round-trip, confirmed a valid
+      decodable PNG at the expected dimensions; built and torn down
+      during development, not checked in).
+- [x] "Choose Terrain File **history**" was a misreading on my part —
+      traced `Win/Mineways.cpp`'s `loadTerrainList()` and it's not a
+      recently-used list at all: it scans the app directory for
+      `terrainExt*.png` files shipped alongside the executable (alternate
+      texture packs), excluding the `_n`/`_r`/`_m`/`_e` PBR-channel
+      suffix files. Implemented as `ScanTerrainFiles()` (same pattern as
+      `ScanWorldSaves`) populating a "Choose Terrain File" submenu with
+      `[default]` + whatever's found. Also fixed a small pre-existing gap
+      while touching this code: `OnChooseTerrainFile` (the browse dialog)
+      never redrew the map after picking a new file — now it does, along
+      with the two new menu paths.
+- `/` and `?` Help aliases skipped — F1 already covers Help: keyboard and
+  two extra single-character global accelerators isn't worth the
+  collision risk for a purely redundant binding.
 
 ### Backlog (lower priority / optional)
 
@@ -142,8 +157,6 @@ first. Left in the backlog below rather than half-implementing a
 - [ ] Sketchfab publish integration (Upload/Publish dialogs) — no Mac
       equivalent at all — needs a Sketchfab account/API token, likely out
       of scope for unattended work
-- [ ] Jump to Model (F4), Export Map (Ctrl+M), terrain-file history
-      submenu — see notes above
 
 ### At parity (no work needed)
 

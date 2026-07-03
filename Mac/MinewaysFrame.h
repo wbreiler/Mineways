@@ -32,6 +32,8 @@ private:
     void OnWorldMenuItem(wxCommandEvent&);  // dynamic world-list items
     void OnGoToLocation(wxCommandEvent&);
     void OnChooseTerrainFile(wxCommandEvent&);
+    void OnDefaultTerrain(wxCommandEvent&);
+    void OnTerrainMenuItem(wxCommandEvent&);  // dynamic terrainExt*.png list items
     void OnCullingSchemes(wxCommandEvent&);
     void OnExportOBJ(wxCommandEvent&);
     void OnQuit(wxCommandEvent&);
@@ -41,6 +43,7 @@ private:
     void OnUndoSelection(wxCommandEvent&);
     void OnJumpSpawn(wxCommandEvent&);
     void OnJumpPlayer(wxCommandEvent&);
+    void OnJumpModel(wxCommandEvent&);
     void OnViewInformation(wxCommandEvent&);
     void OnViewHell(wxCommandEvent&);
     void OnViewEnd(wxCommandEvent&);
@@ -49,6 +52,7 @@ private:
     void OnSelectAll(wxCommandEvent&);
     void OnReloadWorld(wxCommandEvent&);
     void OnRepeatExport(wxCommandEvent&);
+    void OnExportMap(wxCommandEvent&);
     void OnDownloadTerrainFiles(wxCommandEvent&);
     // Help menu
     void OnAbout(wxCommandEvent&);
@@ -64,6 +68,7 @@ enum {
     ID_OPEN_FILE,
     ID_TEST_BLOCK_WORLD,
     ID_CHOOSE_TERRAIN,
+    ID_DEFAULT_TERRAIN,
     ID_CULLING_SCHEMES,
     ID_EXPORT_OBJ,
     ID_SLIDER_TOP,
@@ -73,6 +78,7 @@ enum {
     ID_VIEW_UNDOSELECTION,
     ID_JUMP_SPAWN,
     ID_JUMP_PLAYER,
+    ID_JUMP_MODEL,
     ID_VIEW_INFORMATION,
     ID_VIEW_HELL,
     ID_VIEW_END,
@@ -88,6 +94,7 @@ enum {
     ID_SELECT_ALL,
     ID_RELOAD_WORLD,
     ID_REPEAT_EXPORT,
+    ID_EXPORT_MAP,
     ID_DOWNLOAD_TERRAIN_FILES,
     // Help menu
     ID_HELP_KEYBOARD,
@@ -98,4 +105,7 @@ enum {
     // Dynamic world-list items occupy [ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE+MAX_WORLDS)
     ID_WORLD_ITEM_BASE = wxID_HIGHEST + 100,
     MAX_WORLDS         = 50,
+    // Dynamic terrainExt*.png list items occupy [ID_TERRAIN_ITEM_BASE, ID_TERRAIN_ITEM_BASE+MAX_TERRAIN_FILES)
+    ID_TERRAIN_ITEM_BASE = wxID_HIGHEST + 200,
+    MAX_TERRAIN_FILES    = 45,
 };
