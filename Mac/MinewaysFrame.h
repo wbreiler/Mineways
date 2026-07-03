@@ -14,6 +14,20 @@ public:
     void UpdateBottomSlider(int depth);
     void OnMapPanelSize(int w, int h);
 
+    // Exposed for Mac/ImportSettings.cpp (header re-import + script execution), which needs
+    // to drive the same world/terrain/export/navigation actions the menu items trigger.
+    wxString LoadWorldFromDir(const wxString& dir);   // "" on success, error message on failure
+    void LoadTestBlockWorld();
+    wxString LoadSchematic(const wxString& path);   // "" on success, error message on failure
+    void RunExport(ExportFileData& efd, const wchar_t* outputPath);
+    void RedrawMap();
+    void SetTerrainFile(const wxString& path);
+    bool SwitchToNether();   // false if this world has no Nether (schematic/test world)
+    bool SwitchToTheEnd();   // false if this world has no End
+    void JumpToSpawn();
+    void JumpToPlayer();
+    bool JumpToModel();      // false if nothing is selected
+
 private:
     MapPanel*    m_mapPanel   = nullptr;
     wxSlider*    m_sliderTop  = nullptr;   // top-depth (ceiling)
@@ -22,8 +36,6 @@ private:
     wxStaticText* m_labelBot  = nullptr;
 
     void BuildMenu();
-    void LoadWorldFromDir(const wxString& dir);
-    void RunExport(ExportFileData& efd, const wchar_t* outputPath);
 
     // File menu
     void OnOpenWorld(wxCommandEvent&);
@@ -54,6 +66,7 @@ private:
     void OnRepeatExport(wxCommandEvent&);
     void OnExportMap(wxCommandEvent&);
     void OnDownloadTerrainFiles(wxCommandEvent&);
+    void OnImportSettings(wxCommandEvent&);
     // Help menu
     void OnAbout(wxCommandEvent&);
     void OnHelpURL(wxCommandEvent&);   // keyboard/troubleshooting/documentation/report-a-bug (same handler, ID picks URL)
@@ -96,6 +109,7 @@ enum {
     ID_REPEAT_EXPORT,
     ID_EXPORT_MAP,
     ID_DOWNLOAD_TERRAIN_FILES,
+    ID_IMPORT_SETTINGS,
     // Help menu
     ID_HELP_KEYBOARD,
     ID_HELP_TROUBLESHOOTING,

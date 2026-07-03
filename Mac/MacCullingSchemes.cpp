@@ -135,6 +135,26 @@ static wchar_t gLastSelected[255] = {};
 
 const wchar_t* getSelectedCullingSchemeW() { return gLastSelected; }
 
+bool SelectCullingSchemeByName(const wxString& name)
+{
+    if (name.IsEmpty() || name.CmpNoCase("Standard") == 0) {
+        applyCullingScheme(nullptr);
+        wcscpy(gLastSelected, L"Standard");
+        return true;
+    }
+    for (int id : listSchemeIds()) {
+        MacCullingScheme cs;
+        if (!loadScheme(id, cs)) continue;
+        if (wxString::FromUTF8(cs.name).CmpNoCase(name) == 0) {
+            applyCullingScheme(cs.culled);
+            wcsncpy(gLastSelected, name.wc_str(), 254);
+            gLastSelected[254] = L'\0';
+            return true;
+        }
+    }
+    return false;
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Block-filter editor dialog
 // ──────────────────────────────────────────────────────────────────────────────

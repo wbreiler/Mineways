@@ -43,7 +43,8 @@ GUI_SRCS  := MinewaysApp.cpp \
              MapPanel.cpp \
              LocationDialog.cpp \
              ExportDialog.cpp \
-             MacCullingSchemes.cpp
+             MacCullingSchemes.cpp \
+             ImportSettings.cpp
 
 CORE_OBJS := $(patsubst $(SRC_DIR)/%.cpp, %.o, $(CORE_SRCS))
 GUI_OBJS  := $(patsubst %.cpp, %.o, $(GUI_SRCS))
@@ -94,6 +95,9 @@ ExportDialog.o: ExportDialog.cpp $(COMPAT_H)
 	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
 MacCullingSchemes.o: MacCullingSchemes.cpp $(COMPAT_H)
+	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
+
+ImportSettings.o: ImportSettings.cpp $(COMPAT_H)
 	$(CXX) $(GUI_CXXFLAGS) -c $< -o $@
 
 clean:

@@ -149,26 +149,57 @@ first. Left in the backlog below rather than half-implementing a
   two extra single-character global accelerators isn't worth the
   collision risk for a purely redundant binding.
 
-### Backlog (lower priority / optional)
+### Import Settings — done (2026-07-03)
 
-- [ ] Import Settings (Ctrl+I) — prerequisite for Recent Exports, see above.
-      **Scoped out during the 2026-07-03 autonomous pass**: traced
-      `Win/Mineways.cpp`'s `importSettings`/`importModelFile`/
-      `readAndExecuteScript`/`interpretImportLine` — this isn't a small
-      feature. It parses the `#`-comment header Windows writes into every
-      exported OBJ/USD/VRML file (`writeStatistics`) back into a full
-      `ExportFileData`, *and* separately implements a whole batch-scripting
-      command language (`readAndExecuteScript`) for automation. Combined
-      it's 1000+ lines on Windows — comparable to or larger than the
-      Export dialog rewrite, which was its own dedicated pass. Recommend
-      treating as a dedicated future session with explicit scope
-      confirmation (e.g. "just header re-import" vs. "header + scripting
-      too"), not something to fold into incremental backlog work.
-- [ ] Recent Exports submenu (`IDM_RECENT_EXPORT_BASE`, up to 5 entries) —
-      blocked on Import Settings, see above
+- [x] Import Settings (Ctrl+I), full scope: both header re-import (parse the
+      `#`-comment block `writeStatistics` writes into every exported
+      OBJ/USD/VRML/schematic file back into `ExportFileData`) and the
+      batch-scripting command language. New `Mac/ImportSettings.h/.cpp`,
+      ported from `Win/Mineways.cpp`'s `importSettings`/`importModelFile`/
+      `readAndExecuteScript`/`interpretImportLine`/`interpretScriptLine`.
+      Atomic header-commit semantics preserved (`ImportedSet::scratchEfd` —
+      a header with a mid-parse error can't leave the live `gEfd`
+      half-modified; only committed on full success). Two-pass script
+      execution (syntax-check-only dry run, then a real pass) also
+      preserved. Not ported (documented in `ImportSettings.h`, reported as
+      a clear error rather than silently ignored): Sketchfab publish
+      commands, Windows mouse-button remapping, "Custom printer" material
+      definitions, block-name `Translate:` aliasing, `Chunk size:`, "Set
+      unknown block ID:", script log-file management, the `Change blocks:`
+      programmatic block-editing sub-language, and script-driven
+      `Export Map:` (Mac's map export needs its own file dialog rather than
+      accepting a path parameter).
+- [x] Found and fixed a real bug while building the verification harness:
+      `MinewaysFrame::RunExport` never re-derived `efd.minxVal/.../.maxzVal`
+      from the live highlight state before exporting — it relied on the
+      caller (`OnExportOBJ`) having pre-filled `gEfd` from
+      `GetHighlightState()`. That's fine for the menu path, but a script's
+      `Selection location...` command only calls `SetHighlightState`
+      (updates the map highlight), not `gEfd` directly, so a script-driven
+      export would silently use stale/zero bounds instead of the selection
+      it just set. Windows' `saveObjFile` (`Win/Mineways.cpp:5263`) avoids
+      this by unconditionally calling `GetHighlightState` right before
+      every export, in the one shared function — `RunExport` now does the
+      same.
+- [x] Verified end-to-end with a standalone headless harness (built and
+      torn down during development, not checked in): real export →
+      header re-import round-trip (settings correctly restored into a
+      mutated live `ExportFileData`), a bad-path failure case, a script
+      exercising world load / zoom / render-type / toggle commands, and a
+      script exercising `Selection location:` + `Export for Rendering:`
+      together (the regression test for the bug above — confirmed export
+      bounds match the script's selection, not stale state, and that a
+      real file is written). All checks passed.
+- [x] Recent Exports submenu (`IDM_RECENT_EXPORT_BASE`, up to 5 entries) —
+      was blocked on Import Settings existing; now unblocked. Not yet
+      implemented — next up.
+
+### Explicitly deferred to the upstream maintainer
+
 - [ ] Sketchfab publish integration (Upload/Publish dialogs) — no Mac
-      equivalent at all — needs a Sketchfab account/API token, likely out
-      of scope for unattended work
+      equivalent at all. Needs a real Sketchfab account/API token to build
+      and verify against, which isn't available here — left for
+      erich666/whoever has Sketchfab credentials to pick up.
 
 ### At parity (no work needed)
 
@@ -213,7 +244,7 @@ first. Left in the backlog below rather than half-implementing a
 - [x] Save/restore: terrain file path
 - [x] Save/restore: last export path
 - [x] Save/restore: full export settings (`ExportFileData`)
-- [ ] Save/restore: recent exports submenu (up to 5 entries) — blocked on Import Settings
+- [ ] Save/restore: recent exports submenu (up to 5 entries) — was blocked on Import Settings, now unblocked
 
 ## App Packaging
 
