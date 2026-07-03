@@ -9,6 +9,7 @@
 extern double& GetCurX();
 extern double& GetCurZ();
 extern double& GetCurScale();
+extern float&  GetMinZoom();
 extern BOOL    IsLoaded();
 extern unsigned char* GetMapBits();
 extern int     GetMapWidth();
@@ -165,7 +166,7 @@ void MapPanel::OnMouseWheel(wxMouseEvent& e)
 {
     double& scale = GetCurScale();
     double factor = (e.GetWheelRotation() > 0) ? 1.1 : (1.0 / 1.1);
-    scale = wxMax(1.0, wxMin(40.0, scale * factor));
+    scale = wxMax((double)GetMinZoom(), wxMin(40.0, scale * factor));
     RedrawMap();
 }
 

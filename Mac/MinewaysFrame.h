@@ -35,6 +35,15 @@ private:
     // View menu
     void OnSliderTop(wxCommandEvent&);
     void OnSliderBot(wxCommandEvent&);
+    void OnUndoSelection(wxCommandEvent&);
+    void OnJumpSpawn(wxCommandEvent&);
+    void OnJumpPlayer(wxCommandEvent&);
+    void OnViewInformation(wxCommandEvent&);
+    void OnViewHell(wxCommandEvent&);
+    void OnViewEnd(wxCommandEvent&);
+    void OnToggleWorldTypeBit(wxCommandEvent&);   // Show all/biomes/elevation/lighting/cave/obscured/water/grid
+    void OnZoomOutFurther(wxCommandEvent&);
+    void OnSelectAll(wxCommandEvent&);
     // Help menu
     void OnAbout(wxCommandEvent&);
 
@@ -51,8 +60,25 @@ enum {
     ID_EXPORT_OBJ,
     ID_SLIDER_TOP,
     ID_SLIDER_BOT,
-    // Dynamic world-list items occupy [ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE+MAX_WORLDS)
     ID_GO_TO_LOCATION,
+    // View menu
+    ID_VIEW_UNDOSELECTION,
+    ID_JUMP_SPAWN,
+    ID_JUMP_PLAYER,
+    ID_VIEW_INFORMATION,
+    ID_VIEW_HELL,
+    ID_VIEW_END,
+    ID_SHOWALL,
+    ID_SHOWBIOMES,
+    ID_ELEVATION_SHADING,
+    ID_LIGHTING,
+    ID_CAVEMODE,
+    ID_HIDEOBSCURED,
+    ID_TRANSPARENT_WATER,
+    ID_MAPGRID,
+    ID_ZOOMOUTFURTHER,
+    ID_SELECT_ALL,
+    // Dynamic world-list items occupy [ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE+MAX_WORLDS)
     ID_WORLD_ITEM_BASE = wxID_HIGHEST + 100,
     MAX_WORLDS         = 50,
 };

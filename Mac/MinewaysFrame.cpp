@@ -15,6 +15,7 @@
 #include "CullingSchemes.h"   // applyCullingScheme/isBlockCulled declarations
 
 // ─── Globals (mirror of Win/Mineways.cpp static globals) ────────────────────
+#define MINZOOM 1.0f
 static Options gOptions = {
     0,
     BLF_WHOLE | BLF_ALMOST_WHOLE | BLF_STAIRS | BLF_HALF | BLF_MIDDLER |
@@ -40,6 +41,10 @@ static wchar_t     gSelectTerrainPathAndName[MAX_PATH_AND_FILE];
 static wchar_t     gSelectTerrainDir[MAX_PATH_AND_FILE];
 static wchar_t     gWorldPathDefault[MAX_PATH_AND_FILE];
 static wchar_t     gPreferredSeparatorString[2] = { L'/', 0 };
+static int         gSpawnX = 0, gSpawnY = 64, gSpawnZ = 0;
+static int         gPlayerX = 0, gPlayerY = 64, gPlayerZ = 0;
+static int         gOverworldHideStatus = 0;   // HIDEOBSCURED bit, saved across a Nether visit
+static float       gMinZoom         = MINZOOM;
 
 // pixel buffer for map (owned here; MapPanel reads it)
 static unsigned char* gMapBits  = nullptr;
@@ -51,8 +56,10 @@ static wxString gWorldDirs[MAX_WORLDS];
 static wxString gWorldDisplayNames[MAX_WORLDS];
 static int      gNumWorlds = 0;
 
-// Persistent export settings (survive across dialog invocations)
-static ExportSettings gExportSettings = { 0, {}, 0,0,0,0,0,0, 2, true, false };
+// Persistent export settings (survive across dialog invocations); mirrors
+// Windows' static epd/gExportViewData pattern.
+static ExportFileData gEfd = {};
+static wchar_t        gExportPath[4096] = {};
 
 // The singleton frame (so MapPanel event handlers can reach it)
 MinewaysFrame* gFrame = nullptr;
@@ -144,6 +151,7 @@ void RedrawMapIntoBuffer()
 double& GetCurX()     { return gCurX; }
 double& GetCurZ()     { return gCurZ; }
 double& GetCurScale() { return gCurScale; }
+float&  GetMinZoom()  { return gMinZoom; }
 BOOL    IsLoaded()    { return gLoaded; }
 unsigned char* GetMapBits()  { return gMapBits; }
 int     GetMapWidth()        { return gMapWidth; }
@@ -180,6 +188,22 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(wxID_ABOUT,          MinewaysFrame::OnAbout)
     EVT_SLIDER(ID_SLIDER_TOP,     MinewaysFrame::OnSliderTop)
     EVT_SLIDER(ID_SLIDER_BOT,     MinewaysFrame::OnSliderBot)
+    EVT_MENU(ID_VIEW_UNDOSELECTION, MinewaysFrame::OnUndoSelection)
+    EVT_MENU(ID_JUMP_SPAWN,       MinewaysFrame::OnJumpSpawn)
+    EVT_MENU(ID_JUMP_PLAYER,      MinewaysFrame::OnJumpPlayer)
+    EVT_MENU(ID_VIEW_INFORMATION, MinewaysFrame::OnViewInformation)
+    EVT_MENU(ID_VIEW_HELL,        MinewaysFrame::OnViewHell)
+    EVT_MENU(ID_VIEW_END,         MinewaysFrame::OnViewEnd)
+    EVT_MENU(ID_SHOWALL,          MinewaysFrame::OnToggleWorldTypeBit)
+    EVT_MENU(ID_SHOWBIOMES,       MinewaysFrame::OnToggleWorldTypeBit)
+    EVT_MENU(ID_ELEVATION_SHADING, MinewaysFrame::OnToggleWorldTypeBit)
+    EVT_MENU(ID_LIGHTING,         MinewaysFrame::OnToggleWorldTypeBit)
+    EVT_MENU(ID_CAVEMODE,         MinewaysFrame::OnToggleWorldTypeBit)
+    EVT_MENU(ID_HIDEOBSCURED,     MinewaysFrame::OnToggleWorldTypeBit)
+    EVT_MENU(ID_TRANSPARENT_WATER, MinewaysFrame::OnToggleWorldTypeBit)
+    EVT_MENU(ID_MAPGRID,          MinewaysFrame::OnToggleWorldTypeBit)
+    EVT_MENU(ID_ZOOMOUTFURTHER,   MinewaysFrame::OnZoomOutFurther)
+    EVT_MENU(ID_SELECT_ALL,       MinewaysFrame::OnSelectAll)
     EVT_MENU_RANGE(ID_WORLD_ITEM_BASE, ID_WORLD_ITEM_BASE + MAX_WORLDS - 1,
                    MinewaysFrame::OnWorldMenuItem)
 wxEND_EVENT_TABLE()
@@ -208,6 +232,9 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
     // Default world saves path
     wxString savesDir = wxGetHomeDir() + "/Library/Application Support/minecraft/saves";
 
+    // Export defaults, matching Windows' "Export for Rendering" preset
+    InitViewExportData(gEfd);
+
     // Restore persisted settings
     wxConfig cfg("Mineways");
     wxString cfgTerrain, cfgSaves, cfgExportPath;
@@ -216,7 +243,7 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
     if (cfg.Read("savesDir", &cfgSaves))
         savesDir = cfgSaves;
     if (cfg.Read("exportPath", &cfgExportPath))
-        mbstowcs(gExportSettings.outputPath, cfgExportPath.utf8_str(), 4096);
+        mbstowcs(gExportPath, cfgExportPath.utf8_str(), 4096);
     gCurX = cfg.ReadDouble("curX", 0.0);
     gCurZ = cfg.ReadDouble("curZ", 0.0);
     gCurScale = cfg.ReadDouble("curScale", 1.0);
@@ -280,8 +307,8 @@ MinewaysFrame::~MinewaysFrame()
     cfg.Write("terrainPath",  wxString::FromUTF8(buf));
     char savesPath[4096]; wcstombs(savesPath, gWorldPathDefault, sizeof(savesPath));
     cfg.Write("savesDir",    wxString::FromUTF8(savesPath));
-    if (gExportSettings.outputPath[0]) {
-        wcstombs(buf, gExportSettings.outputPath, sizeof(buf));
+    if (gExportPath[0]) {
+        wcstombs(buf, gExportPath, sizeof(buf));
         cfg.Write("exportPath", wxString::FromUTF8(buf));
     }
     cfg.Write("curX",     gCurX);
@@ -345,6 +372,8 @@ void MinewaysFrame::BuildMenu()
     wxMenu* worldsMenu = new wxMenu;
     worldsMenu->Append(ID_TEST_BLOCK_WORLD, "Test Block World",
                        "Built-in test world showing all block types");
+    worldsMenu->Append(ID_OPEN_WORLD, "Browse for World Folder...",
+                       "Choose any Minecraft world folder not in the scanned list");
     if (gNumWorlds > 0) {
         worldsMenu->AppendSeparator();
         for (int i = 0; i < gNumWorlds; i++) {
@@ -367,10 +396,36 @@ void MinewaysFrame::BuildMenu()
     fileMenu->AppendSeparator();
     fileMenu->Append(wxID_EXIT, "Quit\tCtrl+Q");
 
+    wxMenu* viewMenu = new wxMenu;
+    viewMenu->Append(ID_SELECT_ALL, "Select All\tCtrl+A",
+                     "Select the entire visible map (or whole schematic)");
+    viewMenu->Append(ID_VIEW_UNDOSELECTION, "Undo Selection\tCtrl+Z",
+                     "Restore the previous selection");
+    viewMenu->AppendSeparator();
+    viewMenu->Append(ID_JUMP_SPAWN,   "Jump to Spawn\tF2");
+    viewMenu->Append(ID_JUMP_PLAYER,  "Jump to Player\tF3");
+    viewMenu->Append(ID_VIEW_INFORMATION, "Information\tI");
+    viewMenu->AppendSeparator();
+    viewMenu->AppendCheckItem(ID_VIEW_HELL, "View Nether\tF5");
+    viewMenu->AppendCheckItem(ID_VIEW_END,  "View The End\tF6");
+    viewMenu->AppendSeparator();
+    viewMenu->AppendCheckItem(ID_SHOWALL,    "Show all objects\tF7");
+    viewMenu->AppendCheckItem(ID_SHOWBIOMES, "Show biomes\tF8");
+    viewMenu->AppendSeparator();
+    viewMenu->AppendCheckItem(ID_ELEVATION_SHADING, "Elevation shading\tF");
+    viewMenu->AppendCheckItem(ID_LIGHTING,          "Lighting\tL");
+    viewMenu->AppendCheckItem(ID_CAVEMODE,          "Cave mode\tC");
+    viewMenu->AppendCheckItem(ID_HIDEOBSCURED,      "Hide obscured\tH");
+    viewMenu->AppendCheckItem(ID_TRANSPARENT_WATER, "Transparent water\tT");
+    viewMenu->AppendCheckItem(ID_MAPGRID,           "Map grid\tM");
+    viewMenu->AppendSeparator();
+    viewMenu->AppendCheckItem(ID_ZOOMOUTFURTHER, "Zoom out further");
+
     wxMenu* helpMenu = new wxMenu;
     helpMenu->Append(wxID_ABOUT, "About Mineways");
 
     mb->Append(fileMenu, "&File");
+    mb->Append(viewMenu, "&View");
     mb->Append(helpMenu, "&Help");
     SetMenuBar(mb);
 }
@@ -404,7 +459,7 @@ void MinewaysFrame::UpdateStatusBar(int mx, int mz, int my,
 // ─── Menu handlers ────────────────────────────────────────────────────────────
 void MinewaysFrame::OnOpenWorld(wxCommandEvent&)
 {
-    // Fallback: manual directory browse (used if the saves scan found nothing)
+    // Manual directory browse, for worlds outside the scanned saves folder
     char defPath[4096] = "";
     wcstombs(defPath, gWorldPathDefault, sizeof(defPath));
     wxDirDialog dlg(this, "Select a Minecraft world folder",
@@ -550,6 +605,92 @@ void MinewaysFrame::OnOpenFile(wxCommandEvent&)
     if (m_mapPanel) m_mapPanel->RedrawMap();
 }
 
+// Translates ExportFileData into the exportFlags bitmask SaveVolume() actually reads,
+// ported from Win/Mineways.cpp's saveObjFile() (~line 5296-5542) so the dialog's options
+// have the same effect on both platforms.
+static int BuildExportFlags(const ExportFileData& e, wxWindow* parent)
+{
+    int flags = e.flags;
+    int ft = e.fileType;
+
+    if (e.radioExportMtlColors[ft])
+        flags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_OBJ_SEPARATE_TYPES | EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK | EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
+    else if (e.radioExportSolidTexture[ft])
+        flags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_TEXTURE_SWATCHES | EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
+    else if (e.radioExportFullTexture[ft] ||
+             (!(ft == FILE_TYPE_WAVEFRONT_ABS_OBJ || ft == FILE_TYPE_WAVEFRONT_REL_OBJ) && e.radioExportTileTextures[ft]))
+        flags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_TEXTURE_IMAGES | EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
+
+    flags |=
+        (e.chkFillBubbles ? EXPT_FILL_BUBBLES : 0) |
+        ((e.chkFillBubbles && e.chkSealEntrances) ? (EXPT_FILL_BUBBLES | EXPT_SEAL_ENTRANCES) : 0) |
+        ((e.chkFillBubbles && e.chkSealSideTunnels) ? (EXPT_FILL_BUBBLES | EXPT_SEAL_SIDE_TUNNELS) : 0) |
+        (e.chkConnectParts ? EXPT_CONNECT_PARTS : 0) |
+        (e.chkConnectCornerTips ? (EXPT_CONNECT_PARTS | EXPT_CONNECT_CORNER_TIPS) : 0) |
+        (e.chkConnectAllEdges ? (EXPT_CONNECT_PARTS | EXPT_CONNECT_ALL_EDGES) : 0) |
+        (e.chkDeleteFloaters ? EXPT_DELETE_FLOATING_OBJECTS : 0) |
+        (e.chkHollow[ft] ? EXPT_HOLLOW_BOTTOM : 0) |
+        ((e.chkHollow[ft] && e.chkSuperHollow[ft]) ? (EXPT_HOLLOW_BOTTOM | EXPT_SUPER_HOLLOW_BOTTOM) : 0) |
+        (e.chkShowParts ? (EXPT_DEBUG_SHOW_GROUPS | EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_OBJ_SEPARATE_TYPES | EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK) : 0) |
+        (e.chkShowWelds ? (EXPT_DEBUG_SHOW_WELDS | EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_OBJ_SEPARATE_TYPES | EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK) : 0);
+
+    if (ft == FILE_TYPE_WAVEFRONT_ABS_OBJ || ft == FILE_TYPE_WAVEFRONT_REL_OBJ) {
+        if (e.chkSeparateTypes) {
+            flags |= EXPT_OUTPUT_OBJ_SEPARATE_TYPES;
+            if (e.chkMaterialPerFamily) flags |= EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK;
+        } else if (e.chkIndividualBlocks[ft]) {
+            flags |= EXPT_OUTPUT_OBJ_SEPARATE_TYPES | EXPT_INDIVIDUAL_BLOCKS | EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK;
+            if (e.chkMaterialPerFamily) flags |= EXPT_OUTPUT_EACH_BLOCK_A_GROUP;
+        }
+        if (e.chkSplitByBlockType) flags |= EXPT_OUTPUT_OBJ_SPLIT_BY_BLOCK_TYPE;
+        if (e.chkMakeGroupsObjects) flags |= EXPT_OUTPUT_OBJ_MAKE_GROUPS_OBJECTS;
+        if (e.chkCustomMaterial[ft]) flags |= EXPT_OUTPUT_CUSTOM_MATERIAL;
+        if (ft == FILE_TYPE_WAVEFRONT_REL_OBJ) flags |= EXPT_OUTPUT_OBJ_REL_COORDINATES;
+        if (e.radioExportTileTextures[ft])
+            flags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_TEXTURE_IMAGES | EXPT_OUTPUT_OBJ_MTL_PER_TYPE | EXPT_OUTPUT_SEPARATE_TEXTURE_TILES;
+    } else if (ft == FILE_TYPE_USD) {
+        if (e.chkIndividualBlocks[ft]) {
+            flags |= EXPT_OUTPUT_OBJ_SEPARATE_TYPES | EXPT_INDIVIDUAL_BLOCKS | EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK;
+            if (e.chkMaterialPerFamily) flags |= EXPT_OUTPUT_EACH_BLOCK_A_GROUP;
+        }
+        if (e.radioExportTileTextures[ft])
+            flags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_TEXTURE_IMAGES | EXPT_OUTPUT_OBJ_MTL_PER_TYPE | EXPT_OUTPUT_SEPARATE_TEXTURE_TILES;
+        if (e.chkCustomMaterial[ft]) flags |= EXPT_OUTPUT_CUSTOM_MATERIAL;
+        if (e.chkExportMDL) flags |= EXPT_EXPORT_MDL;
+    } else if (ft == FILE_TYPE_ASCII_STL) {
+        int unsupported = EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_TEXTURE_SWATCHES | EXPT_OUTPUT_TEXTURE_IMAGES |
+                          EXPT_OUTPUT_SEPARATE_TEXTURE_TILES | EXPT_OUTPUT_OBJ_MTL_PER_TYPE | EXPT_DEBUG_SHOW_GROUPS | EXPT_DEBUG_SHOW_WELDS;
+        if (flags & unsupported)
+            wxMessageBox("Color output is not supported for ASCII STL; file will contain no colors.",
+                        "Informational", wxOK | wxICON_INFORMATION, parent);
+        flags &= ~unsupported;
+        flags &= ~EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
+    } else if (ft == FILE_TYPE_BINARY_MAGICS_STL || ft == FILE_TYPE_BINARY_VISCAM_STL) {
+        int unsupported = EXPT_OUTPUT_TEXTURE_SWATCHES | EXPT_OUTPUT_TEXTURE_IMAGES | EXPT_OUTPUT_SEPARATE_TEXTURE_TILES;
+        if (flags & unsupported)
+            wxMessageBox("Texture output is not supported for binary STL; file will contain solid colors instead.",
+                        "Informational", wxOK | wxICON_INFORMATION, parent);
+        flags &= ~unsupported;
+        flags &= ~EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
+    } else if (ft == FILE_TYPE_VRML2) {
+        if ((flags & EXPT_OUTPUT_TEXTURE) && (flags & EXPT_3DPRINT))
+            flags &= ~EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
+    } else if (ft == FILE_TYPE_SCHEMATIC || ft == FILE_TYPE_SPONGE_SCHEMATIC) {
+        flags = 0;   // schematic export ignores all options except Y-axis rotation
+    }
+
+    if (e.chkBiome) flags |= EXPT_BIOME;
+
+    if (flags & EXPT_DEBUG_SHOW_GROUPS) {
+        if (flags & (EXPT_OUTPUT_TEXTURE_IMAGES | EXPT_OUTPUT_SEPARATE_TEXTURE_TILES)) {
+            flags &= ~(EXPT_OUTPUT_TEXTURE_IMAGES | EXPT_OUTPUT_SEPARATE_TEXTURE_TILES);
+            flags |= EXPT_OUTPUT_TEXTURE_SWATCHES;
+        }
+        flags &= ~EXPT_INDIVIDUAL_BLOCKS;
+    }
+    return flags;
+}
+
 void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
 {
     if (!gLoaded) {
@@ -567,52 +708,20 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
         return;
     }
 
-    // Pre-fill bounds into persistent settings
-    gExportSettings.minx = minx; gExportSettings.miny = miny; gExportSettings.minz = minz;
-    gExportSettings.maxx = maxx; gExportSettings.maxy = maxy; gExportSettings.maxz = maxz;
+    // Pre-fill bounds into the persistent ExportFileData
+    gEfd.minxVal = minx; gEfd.minyVal = miny; gEfd.minzVal = minz;
+    gEfd.maxxVal = maxx; gEfd.maxyVal = maxy; gEfd.maxzVal = maxz;
 
-    if (doExportDialog(this, gExportSettings, minx, miny, minz, maxx, maxy, maxz) != wxID_OK)
+    if (doExportDialog(this, gEfd, gExportPath, 4096, minx, miny, minz, maxx, maxy, maxz) != wxID_OK)
         return;
 
-    // Build ExportFileData from dialog settings
-    static ExportFileData efd = {};
-    efd.fileType = gExportSettings.fileType;
-    efd.minxVal = gExportSettings.minx; efd.minyVal = gExportSettings.miny; efd.minzVal = gExportSettings.minz;
-    efd.maxxVal = gExportSettings.maxx; efd.maxyVal = gExportSettings.maxy; efd.maxzVal = gExportSettings.maxz;
-    efd.chkCenterModel = gExportSettings.centerModel ? 1 : 0;
-    for (int t = 0; t < FILE_TYPE_TOTAL; t++) efd.chkMakeZUp[t] = gExportSettings.zUp ? 1 : 0;
-    // material radio buttons
-    for (int t = 0; t < FILE_TYPE_TOTAL; t++) {
-        efd.radioExportNoMaterials[t]   = (gExportSettings.materialType == 0) ? 1 : 0;
-        efd.radioExportMtlColors[t]     = (gExportSettings.materialType == 1) ? 1 : 0;
-        efd.radioExportSolidTexture[t]  = 0;
-        efd.radioExportFullTexture[t]   = (gExportSettings.materialType == 2) ? 1 : 0;
-        efd.radioExportTileTextures[t]  = 0;
-    }
-    efd.blockSizeVal[efd.fileType] = 1.0f;
-    efd.chkCreateModelFiles[efd.fileType] = 1;  // keep files (no ZIP for now)
-    efd.chkCreateZip[efd.fileType] = 0;
-    efd.chkBlockFacesAtBorders = 1;
-    efd.chkBiome = 0;
-    efd.tileDirString[0] = '\0';
-    efd.chkTextureRGB = 1; efd.chkTextureA = 1; efd.chkTextureRGBA = 1;
-    efd.radioScaleByBlock = 1;
-    efd.radioRotate0 = 1;
-
-    // Set export flags on gOptions
-    gOptions.pEFD = &efd;
-    gOptions.exportFlags = 0;
-    gOptions.saveFilterFlags = BLF_WHOLE | BLF_ALMOST_WHOLE | BLF_STAIRS | BLF_HALF |
-        BLF_MIDDLER | BLF_BILLBOARD | BLF_PANE | BLF_FLATTEN | BLF_FLATTEN_SMALL;
-
-    if (gExportSettings.materialType == 1)
-        gOptions.exportFlags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_OBJ_SEPARATE_TYPES |
-                                EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK | EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
-    else if (gExportSettings.materialType == 2)
-        gOptions.exportFlags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_TEXTURE_IMAGES |
-                                EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
-
-    // center model and z-up are handled via pEFD fields, not exportFlags
+    gOptions.pEFD = &gEfd;
+    gOptions.exportFlags = BuildExportFlags(gEfd, this);
+    gOptions.saveFilterFlags = gEfd.chkExportAll
+        ? (BLF_WHOLE | BLF_ALMOST_WHOLE | BLF_STAIRS | BLF_HALF | BLF_MIDDLER | BLF_BILLBOARD | BLF_PANE |
+           BLF_FLATTEN | BLF_FLATTEN_SMALL | BLF_SMALL_MIDDLER | BLF_SMALL_BILLBOARD)
+        : (BLF_WHOLE | BLF_ALMOST_WHOLE | BLF_STAIRS | BLF_HALF | BLF_MIDDLER | BLF_BILLBOARD | BLF_PANE |
+           BLF_FLATTEN | BLF_FLATTEN_SMALL);
 
     // Exe/bundle directory for texture lookup
     wchar_t curDir[MAX_PATH_AND_FILE];
@@ -626,7 +735,7 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
     // Quick I/O probe: can we create a file in the chosen directory at all?
     {
         char probePath[MAX_PATH_AND_FILE];
-        wcstombs(probePath, gExportSettings.outputPath, sizeof(probePath));
+        wcstombs(probePath, gExportPath, sizeof(probePath));
         FILE* probe = fopen(probePath, "wb");
         if (!probe) {
             wxMessageBox(wxString::Format(
@@ -643,10 +752,10 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
     outputFileList.count = 0;
     for (int i = 0; i < MAX_OUTPUT_FILES; i++) outputFileList.name[i] = nullptr;
 
-    int errCode = SaveVolume(gExportSettings.outputPath, efd.fileType,
+    int errCode = SaveVolume(gExportPath, gEfd.fileType,
         &gOptions, &gWorldGuide, curDir,
-        efd.minxVal, efd.minyVal, efd.minzVal,
-        efd.maxxVal, efd.maxyVal, efd.maxzVal,
+        gEfd.minxVal, gEfd.minyVal, gEfd.minzVal,
+        gEfd.maxxVal, gEfd.maxyVal, gEfd.maxzVal,
         gMinHeight, gMaxHeight,
         nullptr /*progress*/, gSelectTerrainPathAndName, (wchar_t*)getSelectedCullingSchemeW(),
         &outputFileList,
@@ -674,14 +783,14 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
             }
         } else {
             char outPath[MAX_PATH_AND_FILE] = {};
-            wcstombs(outPath, gExportSettings.outputPath, sizeof(outPath));
+            wcstombs(outPath, gExportPath, sizeof(outPath));
             msg += "\n(expected: " + wxString::FromUTF8(outPath) + ")";
         }
         wxMessageBox(msg, "Export done", wxOK | wxICON_INFORMATION, this);
     } else {
         // Show path even on failure so user can diagnose
         char attemptedPath[MAX_PATH_AND_FILE] = {};
-        wcstombs(attemptedPath, gExportSettings.outputPath, sizeof(attemptedPath));
+        wcstombs(attemptedPath, gExportPath, sizeof(attemptedPath));
         wxMessageBox(wxString::Format("Export failed (error %d).\nAttempted path: %s",
                      errCode, attemptedPath),
                      "Export error", wxOK | wxICON_ERROR, this);
@@ -732,6 +841,200 @@ void MinewaysFrame::OnSliderBot(wxCommandEvent&)
     if (m_mapPanel) m_mapPanel->RedrawMap();
 }
 
+void MinewaysFrame::OnSelectAll(wxCommandEvent&)
+{
+    if (!gLoaded) return;
+    int on, minx, miny, minz, maxx, maxy, maxz;
+    if (gWorldGuide.type == WORLD_SCHEMATIC_TYPE) {
+        minx = 0; minz = 0; maxx = gWorldGuide.sch.width - 1; maxz = gWorldGuide.sch.length - 1;
+        maxy = gWorldGuide.sch.height - 1;
+        gTargetDepth = gMinHeight;
+    } else {
+        // needed for maxy
+        GetHighlightState(&on, &minx, &miny, &minz, &maxx, &maxy, &maxz, gMinHeight);
+        // select the visible map area, roughly, from the current center/scale/panel size
+        minx = (int)(gCurX - (double)gMapWidth  / (2 * gCurScale));
+        minz = (int)(gCurZ - (double)gMapHeight / (2 * gCurScale));
+        maxx = (int)(gCurX + (double)gMapWidth  / (2 * gCurScale));
+        maxz = (int)(gCurZ + (double)gMapHeight / (2 * gCurScale));
+        gTargetDepth = GetMinimumSelectionHeight(&gWorldGuide, &gOptions, minx, minz, maxx, maxz,
+                                                 gMinHeight, gMaxHeight, true, true, maxy);
+    }
+    gHighlightOn = TRUE;
+    SetHighlightState(gHighlightOn, minx, gTargetDepth, minz, maxx, gCurDepth, maxz,
+                      gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_PUSH);
+    if (m_sliderBot) {
+        m_sliderBot->SetValue(gTargetDepth);
+        m_labelBot->SetLabel(wxString::Format("%d", gTargetDepth));
+    }
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnUndoSelection(wxCommandEvent&)
+{
+    UndoHighlight();
+    int on, minx, miny, minz, maxx, maxy, maxz;
+    GetHighlightState(&on, &minx, &miny, &minz, &maxx, &maxy, &maxz, gMinHeight);
+    gHighlightOn = on;
+    gTargetDepth = miny;
+    gCurDepth = maxy;
+    if (m_sliderBot) { m_sliderBot->SetValue(gTargetDepth); m_labelBot->SetLabel(wxString::Format("%d", gTargetDepth)); }
+    if (m_sliderTop) { m_sliderTop->SetValue(gCurDepth);    m_labelTop->SetLabel(wxString::Format("%d", gCurDepth)); }
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnJumpSpawn(wxCommandEvent&)
+{
+    if (!gLoaded) return;
+    gCurX = gSpawnX; gCurZ = gSpawnZ;
+    if (gOptions.worldType & HELL) { gCurX /= 8.0; gCurZ /= 8.0; }
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnJumpPlayer(wxCommandEvent&)
+{
+    if (!gLoaded) return;
+    gCurX = gPlayerX; gCurZ = gPlayerZ;
+    if (gOptions.worldType & HELL) { gCurX /= 8.0; gCurZ /= 8.0; }
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnViewInformation(wxCommandEvent&)
+{
+    wxString info;
+    switch (gWorldGuide.type) {
+    case WORLD_TEST_BLOCK_TYPE:
+        info = "World is the built-in [Block Test World]";
+        break;
+    case WORLD_LEVEL_TYPE: {
+        char levelName[MAX_PATH_AND_FILE] = {};
+        GetLevelName(gWorldGuide.world, levelName, MAX_PATH_AND_FILE);
+        char worldPath[MAX_PATH_AND_FILE] = {};
+        wcstombs(worldPath, gWorldGuide.world, sizeof(worldPath));
+        info = wxString::Format(
+            "Level name: %s\nDirectory name: %s\n\n"
+            "Major version: 1.%d%s\nData version: %d\n\n"
+            "Spawn location: %d, %d, %d\n",
+            levelName, worldPath,
+            gMinecraftVersion, (gMinecraftVersion == 8 ? " or earlier" : ""),
+            gVersionID, gSpawnX, gSpawnY, gSpawnZ);
+        if (gWorldGuide.isServerWorld)
+            info += "This is a server world; no player location";
+        else
+            info += wxString::Format("Player location: %d, %d, %d", gPlayerX, gPlayerY, gPlayerZ);
+        break;
+    }
+    case WORLD_SCHEMATIC_TYPE:
+        info = wxString::Format(
+            "Width (X - east/west): %d\nHeight (Y - vertical): %d\nLength (Z - north/south): %d",
+            gWorldGuide.sch.width, gWorldGuide.sch.height, gWorldGuide.sch.length);
+        break;
+    default:
+        info = "No world loaded.";
+        break;
+    }
+    wxMessageBox(info, "World Information", wxOK | wxICON_INFORMATION, this);
+}
+
+// Both Nether and End views reuse the same world's chunk loader with the HELL/ENDER
+// worldType bits set — MinewaysMap.cpp's directory-building already picks the DIM-1/DIM1
+// subfolder from those bits, so this is state bookkeeping, not new chunk-loading logic.
+void MinewaysFrame::OnViewHell(wxCommandEvent&)
+{
+    if (gWorldGuide.type != WORLD_LEVEL_TYPE) return;
+    if (!(gOptions.worldType & HELL)) {
+        gOptions.worldType |= HELL;
+        gOptions.worldType &= ~ENDER;
+        gCurX /= 8.0; gCurZ /= 8.0;
+        if (gCurDepth == gMaxHeight) {
+            gCurDepth = 126;
+            if (m_sliderTop) { m_sliderTop->SetValue(gCurDepth); m_labelTop->SetLabel(wxString::Format("%d", gCurDepth)); }
+        }
+        gOverworldHideStatus = gOptions.worldType & HIDEOBSCURED;
+        gOptions.worldType |= HIDEOBSCURED;
+    } else {
+        gCurX *= 8.0; gCurZ *= 8.0;
+        if (gCurDepth == 126) {
+            gCurDepth = gMaxHeight;
+            if (m_sliderTop) { m_sliderTop->SetValue(gCurDepth); m_labelTop->SetLabel(wxString::Format("%d", gCurDepth)); }
+        }
+        gOptions.worldType &= ~HIDEOBSCURED;
+        gOptions.worldType |= gOverworldHideStatus;
+        gOptions.worldType &= ~HELL;
+    }
+    CloseAll();
+    gHighlightOn = FALSE;
+    SetHighlightState(gHighlightOn, 0, 0, 0, 0, 0, 0, gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_CLEAR);
+    if (GetMenuBar()) {
+        GetMenuBar()->Check(ID_VIEW_HELL, (gOptions.worldType & HELL) != 0);
+        GetMenuBar()->Check(ID_VIEW_END,  (gOptions.worldType & ENDER) != 0);
+        GetMenuBar()->Check(ID_HIDEOBSCURED, (gOptions.worldType & HIDEOBSCURED) != 0);
+    }
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnViewEnd(wxCommandEvent&)
+{
+    if (gWorldGuide.type != WORLD_LEVEL_TYPE) return;
+    if (!(gOptions.worldType & ENDER)) {
+        gOptions.worldType |= ENDER;
+        if (gOptions.worldType & HELL) {
+            gCurX *= 8.0; gCurZ *= 8.0;
+            if (gCurDepth == 126) {
+                gCurDepth = gMaxHeight;
+                if (m_sliderTop) { m_sliderTop->SetValue(gCurDepth); m_labelTop->SetLabel(wxString::Format("%d", gCurDepth)); }
+            }
+            gOptions.worldType &= ~HIDEOBSCURED;
+            gOptions.worldType |= gOverworldHideStatus;
+            gOptions.worldType &= ~HELL;
+        }
+    } else {
+        gOptions.worldType &= ~ENDER;
+    }
+    CloseAll();
+    gHighlightOn = FALSE;
+    SetHighlightState(gHighlightOn, 0, 0, 0, 0, 0, 0, gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_CLEAR);
+    if (GetMenuBar()) {
+        GetMenuBar()->Check(ID_VIEW_HELL, (gOptions.worldType & HELL) != 0);
+        GetMenuBar()->Check(ID_VIEW_END,  (gOptions.worldType & ENDER) != 0);
+        GetMenuBar()->Check(ID_HIDEOBSCURED, (gOptions.worldType & HIDEOBSCURED) != 0);
+    }
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnToggleWorldTypeBit(wxCommandEvent& e)
+{
+    int bit = 0;
+    switch (e.GetId()) {
+    case ID_SHOWALL:            bit = SHOWALL; break;
+    case ID_SHOWBIOMES:         bit = BIOMES; break;
+    case ID_ELEVATION_SHADING:  bit = DEPTHSHADING; break;
+    case ID_LIGHTING:           bit = LIGHTING; break;
+    case ID_CAVEMODE:           bit = CAVEMODE; break;
+    case ID_HIDEOBSCURED:       bit = HIDEOBSCURED; break;
+    case ID_TRANSPARENT_WATER:  bit = TRANSPARENT_WATER; break;
+    case ID_MAPGRID:            bit = MAP_GRID; break;
+    default: return;
+    }
+    gOptions.worldType ^= bit;
+    if (GetMenuBar()) GetMenuBar()->Check(e.GetId(), (gOptions.worldType & bit) != 0);
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
+void MinewaysFrame::OnZoomOutFurther(wxCommandEvent&)
+{
+    bool enabling = (gMinZoom >= MINZOOM);
+    gMinZoom = enabling ? 0.0625f : MINZOOM;
+    if (enabling) {
+        wxMessageBox("You can now zoom out further with the mouse scroll wheel, up to 16 "
+                     "blocks wide per pixel. This uses a lot of memory as you zoom out and "
+                     "may slow or lock up Mineways. You're on your own!",
+                     "Warning", wxOK | wxICON_WARNING, this);
+    }
+    if (GetMenuBar()) GetMenuBar()->Check(ID_ZOOMOUTFURTHER, enabling);
+    if (m_mapPanel) m_mapPanel->RedrawMap();
+}
+
 // ─── World loading ────────────────────────────────────────────────────────────
 void MinewaysFrame::LoadWorldFromDir(const wxString& dir)
 {
@@ -755,7 +1058,7 @@ void MinewaysFrame::LoadWorldFromDir(const wxString& dir)
     }
     gWorldGuide.nbtVersion = nbtVer;
 
-    // Spawn/player position from level.dat
+    // Spawn/player position from level.dat (kept in globals for Jump to Spawn/Player)
     int spawnX = 0, spawnY = 64, spawnZ = 0;
     int playerX = 0, playerY = 64, playerZ = 0;
     int dimension = 0;
@@ -764,6 +1067,8 @@ void MinewaysFrame::LoadWorldFromDir(const wxString& dir)
         playerX = spawnX; playerY = spawnY; playerZ = spawnZ;
         gWorldGuide.isServerWorld = true;
     }
+    gSpawnX = spawnX; gSpawnY = spawnY; gSpawnZ = spawnZ;
+    gPlayerX = playerX; gPlayerY = playerY; gPlayerZ = playerZ;
 
     // Version detect
     GetFileVersionId(wdir, &gVersionID);

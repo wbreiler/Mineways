@@ -1067,7 +1067,7 @@ int SaveVolume(wchar_t* saveFileName, int fileType, Options* options, WorldGuide
             // always add a / to the directory, vs. if it doesn't exist ("else" case below) then it will not be output
             strcat_s(gMaterialFileSubdirChar, MAX_PATH_AND_FILE, "/");
 
-            concatFileName3(gMaterialDirectoryPath, gOutputFilePath, materialFileSubdir, L"\\");
+            concatFileName3(gMaterialDirectoryPath, gOutputFilePath, materialFileSubdir, gSeparator);
             // try to create it
             if (!(CreateDirectoryW(gMaterialDirectoryPath, NULL) ||
                 ERROR_ALREADY_EXISTS == GetLastError()))
@@ -1769,7 +1769,7 @@ static int modifyAndWriteTextures(int needDifferentTextures, int fileType)
                 if (strlen(gModel.options->pEFD->tileDirString) > 0) {
                     wchar_t subpath[MAX_PATH_AND_FILE];
                     charToWchar(gModel.options->pEFD->tileDirString, subpath);
-                    wcscat_s(subpath, MAX_PATH_AND_FILE, L"\\");
+                    wcscat_s(subpath, MAX_PATH_AND_FILE, gSeparator);
 
                     // create subdirectory if it doesn't exist
                     concatFileName2(gTextureDirectoryPath, gMaterialDirectoryPath, subpath);
@@ -1989,7 +1989,7 @@ static int modifyAndWriteTextures(int needDifferentTextures, int fileType)
                 if (strlen(gModel.options->pEFD->tileDirString) > 0) {
                     wchar_t subpath[MAX_PATH_AND_FILE];
                     charToWchar(gModel.options->pEFD->tileDirString, subpath);
-                    wcscat_s(subpath, MAX_PATH_AND_FILE, L"\\");
+                    wcscat_s(subpath, MAX_PATH_AND_FILE, gSeparator);
                     concatFileName2(gTextureDirectoryPath, gMaterialDirectoryPath, subpath);
                     if (!(CreateDirectoryW(gTextureDirectoryPath, NULL) ||
                         ERROR_ALREADY_EXISTS == GetLastError()))
