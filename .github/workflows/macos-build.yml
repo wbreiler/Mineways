@@ -2,9 +2,9 @@
 # - Every push/PR touching Mac/ or Win/ builds and uploads the app as a workflow artifact.
 # - Pushing a tag like "v13.1" additionally attaches the zipped app to a GitHub Release.
 #
-# Ships unsigned (ad-hoc signed only, no Apple Developer account needed). First launch
-# will show an "unidentified developer" Gatekeeper warning; right-click > Open once and
-# it runs normally from then on.
+# Ships unsigned (ad-hoc signed only, no Apple Developer account needed). Finder may
+# report the downloaded app as "damaged" due to the quarantine flag on unsigned code —
+# see the release body / README for the one-line `xattr -cr` fix.
 name: macOS Build
 
 on:
@@ -52,6 +52,9 @@ jobs:
             -d Mac/Mineways.app/Contents/Frameworks \
             -p @executable_path/../Frameworks
 
+      - name: Ad-hoc sign whole bundle
+        run: codesign --force --deep --sign - Mac/Mineways.app
+
       - name: Zip app
         run: ditto -c -k --keepParent Mac/Mineways.app Mineways-macOS.zip
 
@@ -67,3 +70,14 @@ jobs:
         with:
           files: Mineways-macOS.zip
           generate_release_notes: true
+          body: |
+            **First launch:** this build is unsigned (no paid Apple Developer account), so
+            after unzipping, macOS Gatekeeper may show "Mineways.app is damaged and can't
+            be opened" — that's just the quarantine flag on an unsigned app, not a broken
+            download or a broken zip. Fix it with one Terminal command, then open normally:
+
+            ```
+            xattr -cr ~/Downloads/Mineways.app
+            ```
+
+            (adjust the path if you moved the app first, e.g. to /Applications)
