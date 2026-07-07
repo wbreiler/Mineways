@@ -1,0 +1,118 @@
+# Builds the wxWidgets macOS port (Mac/) into a self-contained Mineways.app.
+# - Every push/PR touching Mac/ or Win/ builds and uploads the app as a workflow artifact.
+# - Pushing a tag like "v13.1" additionally signs, notarizes, and attaches the
+#   zipped app to a GitHub Release.
+#
+# Required repo secrets for signing + notarization (only needed for tag builds):
+#   BUILD_CERTIFICATE_BASE64     base64 of a "Developer ID Application" .p12
+#                                 (security export-p12, then `base64 -i cert.p12`)
+#   P12_PASSWORD                 password used when exporting that .p12
+#   APP_STORE_CONNECT_KEY_ID     Key ID of an App Store Connect API key
+#   APP_STORE_CONNECT_ISSUER_ID  Issuer ID for that API key
+#   APP_STORE_CONNECT_KEY        contents of the downloaded AuthKey_*.p8 file
+name: macOS Build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths:
+      - 'Mac/**'
+      - 'Win/*.cpp'
+      - 'Win/*.h'
+      - '.github/workflows/macos-build.yml'
+  pull_request:
+    paths:
+      - 'Mac/**'
+      - 'Win/*.cpp'
+      - 'Win/*.h'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install wxwidgets dylibbundler
+
+      - name: Build app bundle
+        run: make -C Mac app
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Mac/Mineways.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" Mac/Mineways.app/Contents/Info.plist
+
+      - name: Bundle dependencies (make app self-contained)
+        run: |
+          dylibbundler -od -b \
+            -x Mac/Mineways.app/Contents/MacOS/mineways \
+            -d Mac/Mineways.app/Contents/Frameworks \
+            -p @executable_path/../Frameworks
+
+      - name: Import signing certificate
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+
+      - name: Codesign app
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          echo "Signing with: $IDENTITY"
+          find Mac/Mineways.app/Contents/Frameworks -name "*.dylib" -exec \
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" {} \;
+          codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" Mac/Mineways.app
+          codesign --verify --deep --strict --verbose=2 Mac/Mineways.app
+
+      - name: Notarize app
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          echo "$APP_STORE_CONNECT_KEY" > "$KEY_PATH"
+          ditto -c -k --keepParent Mac/Mineways.app "$RUNNER_TEMP/Mineways-notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/Mineways-notarize.zip" \
+            --key "$KEY_PATH" --key-id "$APP_STORE_CONNECT_KEY_ID" \
+            --issuer "$APP_STORE_CONNECT_ISSUER_ID" --wait
+          xcrun stapler staple Mac/Mineways.app
+
+      - name: Zip app
+        run: ditto -c -k --keepParent Mac/Mineways.app Mineways-macOS.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mineways-macOS
+          path: Mineways-macOS.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Mineways-macOS.zip
+          generate_release_notes: true
