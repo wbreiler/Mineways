@@ -324,6 +324,72 @@ master: `(unsigned char)`. On `type_field_short`: `(unsigned short)`.
 
 ---
 
+## macOS wxWidgets port (Mac/)
+
+A native ARM64 macOS GUI, parallel to the Windows/MFC one, living in `Mac/`.
+Shares the core library (`nbt.cpp`, `region.cpp`, `ObjFileManip.cpp`,
+`MinewaysMap.cpp`, etc.) from `Win/` unchanged — only the GUI shell
+(`Mac/MinewaysApp.cpp`, `MinewaysFrame.cpp`, `MapPanel.cpp`, dialogs) is
+wxWidgets/Cocoa-specific. `Mac/compat.h` shims the Win32 calls the shared
+core still makes (BOOL, HANDLE, FindFirstFileW, etc.).
+
+**Why it exists:** macOS 28 (fall 2027) drops Rosetta 2; the old Mac "port"
+was a Wineskin-wrapped Windows EXE. See GitHub issue #165.
+
+**Status (July 2026):** feature-complete parity with the Windows GUI —
+world/schematic loading, map navigation, export dialog, Culling Schemes,
+Import Settings (header re-import + scripting), Recent Exports submenu.
+The only explicitly-deferred item is Sketchfab publish integration, left to
+the upstream maintainer. PR open at
+[erich666/Mineways#166](https://github.com/erich666/Mineways/pull/166).
+
+### Build
+
+```
+cd Mac && make          # builds Mac/mineways (bare binary)
+make -C Mac app         # also assembles Mac/Mineways.app bundle
+```
+
+Prerequisites: `brew install wxwidgets zlib` (`wx-config --version` → 3.3.2,
+Cocoa backend). Hand-written `Mac/Makefile`, no Xcode project — clang++
+directly, arm64 only (see `-arch arm64` in `CXXFLAGS`/`LDFLAGS`; no x86_64
+slice, not a universal binary).
+
+### CI/CD and releases
+
+`.github/workflows/macos-build.yml`: every push/PR touching `Mac/` or
+`Win/*.cpp`/`.h` builds `Mineways.app` and uploads it as a workflow
+artifact. Pushing a tag like `v13.00` additionally zips it and attaches it
+to a GitHub Release.
+
+- Dependencies (wxWidgets dylibs) are bundled into `Contents/Frameworks`
+  via `dylibbundler` so the `.app` doesn't require Homebrew on the end
+  user's machine — verified by relocating a built app off this machine
+  and confirming `otool -L` shows no `/opt/homebrew` references.
+- Ships **unsigned** (ad-hoc `codesign --sign -` only, no paid Apple
+  Developer account). A downloaded-and-quarantined unsigned app is
+  rejected by Gatekeeper as "damaged" (not the older, clearer
+  "unidentified developer" prompt) — confirmed via `spctl -a`. The fix,
+  baked into every release's notes, is `xattr -cr path/to/Mineways.app`
+  after download. Don't re-add Developer ID signing/notarization unless
+  the user explicitly wants to pay for and set up a Developer ID cert +
+  App Store Connect API key again — it was tried and deliberately dropped
+  as not worth the setup cost for a hobby OSS build.
+- Version string (`Mac/Makefile`'s `MINEWAYS_VERSION_STRING`, `Info.plist`)
+  is pinned to match what's actually tagged/released, not necessarily
+  `Win/stdafx.h`'s `MINEWAYS_MAJOR/MINOR_VERSION` — the two can drift
+  since Mac releases are cut independently. Check with the user before
+  bumping one to match the other.
+
+### Remotes and PR workflow
+
+`origin` = `wbreiler/Mineways` (this fork, pushed to directly). `upstream`
+= `erich666/Mineways` (Eric Haines's original repo). PRs for this work
+target `upstream`, not `origin` — a PR within the fork itself is
+meaningless since there's nothing to diff against.
+
+---
+
 ## Working preferences (inferred from past sessions)
 
 - **"Just implement"** is the default. When a task is straightforward, skip the
@@ -359,10 +425,9 @@ master: `(unsigned char)`. On `type_field_short`: `(unsigned short)`.
 - `saveBoxMultitileGeometry` pixel coords must be in `[0, 16]` (UV assert).
 - Editor dialogs must not call `SetDlgItemText` for fields that fire `EN_CHANGE`
   before the LV is fully set up — order matters in `WM_INITDIALOG`.
-- Memory `~/.claude/projects/.../memory/` directory: I'm supposed to populate
-  this with structured memory files. It is currently empty. If something seems
-  worth remembering across sessions and doesn't fit in this CLAUDE.md, write
-  it there.
+- Memory `~/.claude/projects/.../memory/` directory holds structured memory
+  files (indexed in that directory's `MEMORY.md`) — check it for Mac-port
+  status/build notes that are point-in-time and may be staler than this file.
 
 ---
 
