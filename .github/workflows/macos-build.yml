@@ -64,20 +64,29 @@ jobs:
           name: Mineways-macOS
           path: Mineways-macOS.zip
 
+      - name: Prepare Release Notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "**First launch:** this build is unsigned (no paid Apple Developer account), so" > release_body.md
+          echo "after unzipping, macOS Gatekeeper may show \"Mineways.app is damaged and can't" >> release_body.md
+          echo "be opened\" — that's just the quarantine flag on an unsigned app, not a broken" >> release_body.md
+          echo "download or a broken zip. Fix it with one Terminal command, then open normally:" >> release_body.md
+          echo "" >> release_body.md
+          echo '```' >> release_body.md
+          echo "xattr -cr ~/Downloads/Mineways.app" >> release_body.md
+          echo '```' >> release_body.md
+          echo "" >> release_body.md
+          echo "(adjust the path if you moved the app first, e.g. to /Applications)" >> release_body.md
+          echo "" >> release_body.md
+          echo "---" >> release_body.md
+          echo "### Release Notes" >> release_body.md
+          echo "" >> release_body.md
+          # Extract the notes under the top-most ## [vX.Y] header until the next ## [ header
+          awk '/^## \[/{if (p) exit; p=1; next} p' CHANGELOG.md >> release_body.md
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: Mineways-macOS.zip
-          generate_release_notes: true
-          body: |
-            **First launch:** this build is unsigned (no paid Apple Developer account), so
-            after unzipping, macOS Gatekeeper may show "Mineways.app is damaged and can't
-            be opened" — that's just the quarantine flag on an unsigned app, not a broken
-            download or a broken zip. Fix it with one Terminal command, then open normally:
-
-            ```
-            xattr -cr ~/Downloads/Mineways.app
-            ```
-
-            (adjust the path if you moved the app first, e.g. to /Applications)
+          body_path: release_body.md
