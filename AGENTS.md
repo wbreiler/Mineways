@@ -1,6 +1,6 @@
-# Mineways — notes for Claude
+# Mineways — notes for AI Agents
 
-This file is the durable hand-off between Claude sessions on this project.
+This file is the durable hand-off between AI agent sessions on this project.
 Read it before doing anything substantive in this repo.
 
 ---
@@ -398,14 +398,14 @@ meaningless since there's nothing to diff against.
   routine pacing.
 - **Terse responses.** End-of-turn summary = 1–2 sentences max. The user reads
   diffs, not narration. State what changed and what's next.
-- **Use TaskCreate for multi-step work.** It surfaces progress and helps the
+- **Use subagents or tools for multi-step work.** It surfaces progress and helps the
   user track where we are in a long refactor.
-- **Mass refactors via PowerShell regex** are acceptable and the user trusts
+- **Mass refactors via regex** are acceptable and the user trusts
   them — but verify with grep afterward, and always build to catch silent
   truncation (especially narrowing warnings as errors).
 - **Diagnostic logging is welcome** when stuck. Pattern: write to
   `C:\Users\ehaines\cull_debug.log` from inside the dialog/code, ask the user
-  to repro, read the log back via `Read`, then strip the logging after.
+  to repro, read the log back, then strip the logging after.
 - **Don't add `#endif` comments, don't reformat unrelated lines, don't add
   emoji** unless explicitly asked.
 - **Match existing column alignment in data tables.** The BlockTranslations
@@ -425,8 +425,7 @@ meaningless since there's nothing to diff against.
 - `saveBoxMultitileGeometry` pixel coords must be in `[0, 16]` (UV assert).
 - Editor dialogs must not call `SetDlgItemText` for fields that fire `EN_CHANGE`
   before the LV is fully set up — order matters in `WM_INITDIALOG`.
-- Memory `~/.claude/projects/.../memory/` directory holds structured memory
-  files (indexed in that directory's `MEMORY.md`) — check it for Mac-port
+- Memory directories hold structured memory files — check them for Mac-port
   status/build notes that are point-in-time and may be staler than this file.
 
 ---

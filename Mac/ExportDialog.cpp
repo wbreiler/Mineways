@@ -172,6 +172,17 @@ public:
 
         LoadFromEfd();
         Bind(wxEVT_BUTTON, &ExportOptionsDialog::OnButton, this, wxID_OK);
+
+        m_typeChoice->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+            int oldFt = m_efd.fileType;
+            if (SaveToEfd(oldFt)) {
+                m_efd.fileType = m_typeChoice->GetSelection();
+                LoadFromEfd();
+            } else {
+                // Validation failed; revert the dropdown
+                m_typeChoice->SetSelection(oldFt);
+            }
+        });
     }
 
     wxString GetPath() const { return m_pathCtrl->GetValue(); }
@@ -527,9 +538,9 @@ private:
     }
 
     // Returns false (and shows an error) if validation fails; caller should not close the dialog.
-    bool SaveToEfd()
+    bool SaveToEfd(int targetFileType = -1)
     {
-        int ft = m_typeChoice->GetSelection();
+        int ft = (targetFileType != -1) ? targetFileType : m_typeChoice->GetSelection();
         if (ft < 0 || ft >= FILE_TYPE_TOTAL) ft = 0;
         m_efd.fileType = ft;
 

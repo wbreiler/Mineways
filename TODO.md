@@ -26,9 +26,8 @@ them in this order — **resume here first**.
       (`MinewaysFrame::OnSelectAll`), matching `Win/Mineways.cpp:2108-2145`
       including the minimum-depth calculation for the non-schematic case.
 
-**Not yet done from this batch** (lower priority, didn't block the above):
-Reload World, Focus View accelerator polish, per-key accelerators beyond
-what's listed above matching Windows' full accelerator table exactly.
+- [x] Reload World, Focus View accelerator polish, and per-key accelerators
+      beyond what's listed above matching Windows' full accelerator table exactly.
 
 ### Export dialog expansion — done (2026-07-03)
 
@@ -62,13 +61,9 @@ already-existing but previously-unused `gSeparator` (set via
 `SetSeparatorObj`, called with `"/"` on Mac and `"\\"` on Windows) at all
 3 sites — Windows behavior unchanged, Mac now creates correct subdirectories.
 
-**Known simplification** (`ponytail:` — ceiling is minor UX inconsistency,
-not incorrect output): per-file-type fields (block size, hollow thickness,
-physical material, etc.) don't live-reload when the user changes the File
-Type dropdown mid-dialog — they're loaded once at dialog-open time for
-whatever file type was current, and written back to whichever file type is
-selected at OK time. Windows reloads these live. Upgrade path: bind
-`m_typeChoice`'s selection-changed event to re-run `LoadFromEfd()`.
+- [x] **Live-reloading of per-file-type fields:** Bound `m_typeChoice`'s
+      selection-changed event to first validate and save current settings,
+      then call `LoadFromEfd()` to show the newly selected file type's fields.
 
 ### Medium-priority items — done (2026-07-03)
 

@@ -603,6 +603,48 @@ void MinewaysFrame::BuildMenu()
     mb->Append(viewMenu, "&View");
     mb->Append(helpMenu, "&Help");
     SetMenuBar(mb);
+
+    wxAcceleratorEntry entries[] = {
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_TAB, ID_IMPORT_SETTINGS),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'A', ID_SELECT_ALL),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'c', ID_CAVEMODE),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'C', ID_CAVEMODE),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'Q', wxID_EXIT),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'f', ID_ELEVATION_SHADING),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'F', ID_ELEVATION_SHADING),
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F6, ID_VIEW_END),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'M', ID_EXPORT_MAP),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'P', ID_EXPORT_OBJ),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'X', ID_REPEAT_EXPORT),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'R', ID_EXPORT_OBJ),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'S', ID_OPEN_FILE),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'T', ID_CHOOSE_TERRAIN),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'v', ID_GO_TO_LOCATION),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'V', ID_GO_TO_LOCATION),
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F5, ID_VIEW_HELL),
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F1, ID_HELP_KEYBOARD),
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F3, ID_JUMP_PLAYER),
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F2, ID_JUMP_SPAWN),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'l', ID_LIGHTING),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'L', ID_LIGHTING),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'm', ID_MAPGRID),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'M', ID_MAPGRID),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'h', ID_HIDEOBSCURED),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'H', ID_HIDEOBSCURED),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'O', ID_OPEN_WORLD),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'r', ID_RELOAD_WORLD),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'R', ID_RELOAD_WORLD),
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F7, ID_SHOWALL),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 't', ID_TRANSPARENT_WATER),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'T', ID_TRANSPARENT_WATER),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'i', ID_VIEW_INFORMATION),
+        wxAcceleratorEntry(wxACCEL_NORMAL, 'I', ID_VIEW_INFORMATION),
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F4, ID_JUMP_MODEL),
+        wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F8, ID_SHOWBIOMES),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'Z', ID_VIEW_UNDOSELECTION),
+    };
+    wxAcceleratorTable accel(WXSIZEOF(entries), entries);
+    SetAcceleratorTable(accel);
 }
 
 void MinewaysFrame::OnMapPanelSize(int w, int h)
