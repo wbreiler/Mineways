@@ -18,7 +18,7 @@ The page you're on now holds the open-source code for Mineways. You probably wan
 Documentation links, credits, etc are also available on the homepage.
 Much of the mapping and UI code is built on the open-source project [Minutor](http://seancode.com/minutor/).
 
-Mineways does not have a Linux build (and the MacOS build is often a few versions behind), but it runs well under [WINE](http://www.winehq.org/). See more [here for Linux](https://www.realtimerendering.com/erich/minecraft/public/mineways/downloads.html#linuxPlatformHelp) and [here for MacOS](https://www.realtimerendering.com/erich/minecraft/public/mineways/downloads.html#mac).
+Mineways does not have a Linux build, but it runs well under [WINE](http://www.winehq.org/). See more [here for Linux](https://www.realtimerendering.com/erich/minecraft/public/mineways/downloads.html#linuxPlatformHelp). We now provide a native macOS build; see the releases page.
 
 You usually want the latest version. If you have problems with it, you might try downloading [an older version](https://www.realtimerendering.com/erich/minecraft/public/mineways/mineways.html#versions). All releases of the code (without EXEs) back to v3.01 are [on Github](https://github.com/erich666/Mineways/releases).
 
@@ -27,6 +27,7 @@ You usually want the latest version. If you have problems with it, you might try
 Source files are here:
 
 * **Win/** contains the Windows version of Mineways (in C++).
+* **Mac/** contains the native macOS version of Mineways (using `wxWidgets`).
 * **channelMixer/** contains the ChannelMixer for Mineways, which extracts the individual block textures from a mod resource pack into a directory.
 * **tileMaker/** contains the TileMaker, which takes the block in that directory and forms a terrainExt.png file for use by Mineways. Using this allows you to replace any terrain textures with your own custom tiles.
 
@@ -40,7 +41,13 @@ You should then find a mineways.exe in GitHub\Mineways\x64\Release\Mineways.exe
 
 For more on Visual Studio 2022 and C++, see [Microsoft's tutorials](https://learn.microsoft.com/en-us/cpp/get-started/?view=msvc-170).
 
-Sorry, other platforms are not directly supported, though Mineways runs fine under [WINE](http://www.winehq.org/) and we also provide a Mac-specific version.
+## macOS
+To compile the native macOS app:
+1. Install dependencies via Homebrew: `brew install wxwidgets dylibbundler zlib`
+2. Run `make -C Mac app` from the project root.
+3. You will find `Mineways.app` inside the `Mac/` directory. Note that the resulting app is unsigned.
+
+Sorry, other platforms like Linux are not directly supported, though Mineways runs fine under [WINE](http://www.winehq.org/).
 
 If you want to work on the mapping part of this program on another platform, see [Minutor](http://seancode.com/minutor/), which *is* supported on Mac and Linux.
 
