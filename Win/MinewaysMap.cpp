@@ -619,7 +619,7 @@ const char* IDBlock(int bx, int by, double cx, double cz, int w, int h, int yOff
 
     void* data;
     // note: found could be false, but we don't care - we assume everything visible is loaded
-    (WorldBlock*)Cache_Find(startxblock + x, startzblock + z, &data);
+    (void)Cache_Find(startxblock + x, startzblock + z, &data);
     block = (WorldBlock*)data;
 
     // this is assumed OK, that we don't need to actually go retrieve the block if empty, as it should be visible and loaded already
@@ -5020,7 +5020,7 @@ static unsigned char* draw(WorldGuide* pWorldGuide, int bx, int bz, int heightAl
                 return gBlankTile;
 
             // fully inside? Use precomputed highlit area
-            static int flux = 0;
+            // static int flux = 0;
             if ((bx * 16 > gBox.minX) && (bx * 16 + 15 < gBox.maxX) &&
                 (bz * 16 > gBox.minZ) && (bz * 16 + 15 < gBox.maxZ))
                 return gBlankHighlitTile;
@@ -5071,7 +5071,7 @@ static unsigned char* draw(WorldGuide* pWorldGuide, int bx, int bz, int heightAl
     {
         void* dummy;
         if (block->rendermissing // wait, the last render was incomplete
-            && Cache_Find(bx, bz + block->rendermissing, &dummy) != NULL) {
+            && Cache_Find(bx, bz + block->rendermissing, &dummy)) {
             ; // we can do a better render now that the missing block is loaded
         }
         else {
@@ -5102,7 +5102,7 @@ static unsigned char* draw(WorldGuide* pWorldGuide, int bx, int bz, int heightAl
 
     // find the block to the west, so we can use its heightmap for shading - it should be loaded.
     // If not, whatever, it's offscreen, perhaps, so the shadow's not exactly correct on the left edge.
-    (WorldBlock*)Cache_Find(bx - 1, bz, &data);
+    (void)Cache_Find(bx - 1, bz, &data);
     prevblock = (WorldBlock*)data;
 
     if (prevblock == NULL || prevblock->blockType == NBT_NO_SECTIONS)
@@ -8173,7 +8173,14 @@ WorldBlock* LoadBlock(WorldGuide* pWorldGuide, int cx, int cz, int mcVersion, in
             for (i = 0; i < 16 * 16 * (block->maxFilledHeight+1); i++, pBlockID++)
             {
                 assert((i >> 8) <= block->maxFilledHeight);
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-constant-out-of-range-compare"
+#endif
                 if ((*pBlockID >= NUM_BLOCKS_STANDARD) && (*pBlockID != BLOCK_STRUCTURE_BLOCK))
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
                 {
                     // some new version of Minecraft, block ID is unrecognized;
                     // turn this block into stone. dataVal will be ignored.
@@ -8629,7 +8636,7 @@ char* MapUnknownBlockName()
 // reset error field for bad block names
 void ClearUnknownBlockNameString()
 {
-    gUnknownBlockName[0] = NULL;
+    gUnknownBlockName[0] = '\0';
 }
 
 void SetUnknownBlockID(int val)

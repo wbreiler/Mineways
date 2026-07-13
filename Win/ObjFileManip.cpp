@@ -60,7 +60,7 @@ THE POSSIBILITY OF SUCH DAMAGE.
 
 static PORTAFILE gModelFile;
 static PORTAFILE gMtlFile;
-static PORTAFILE gPngFile;  // for terrainExt.png input (not texture output)
+// static PORTAFILE gPngFile;  // for terrainExt.png input (not texture output)
 
 #ifdef WIN32
 DWORD br;
@@ -2105,7 +2105,7 @@ wchar_t* RemoveGivenPath(wchar_t* src, wchar_t* path)
     wchar_t* srcPtr = src;
     wchar_t* pathPtr = path;
 
-    while (*srcPtr++ == *pathPtr++ && *pathPtr != NULL) 
+    while (*srcPtr++ == *pathPtr++ && *pathPtr != L'\0') 
     {}
 
     // srcPtr now points at rest of path - remove leading "//" if there.
@@ -4523,6 +4523,7 @@ static void wobbleObjectLocation(int boxIndex, float& shiftX, float& shiftZ)
 
     int bx, by, bz;
     BOX_INDEX_TO_WORLD_XYZ(boxIndex, bx, by, bz);  // cppcheck-suppress 563
+    (void)by;
     // make the numbers positive
     bx += 100001;
     bz += 101031;
@@ -4585,6 +4586,7 @@ static float getRand3to1(int boxIndex)
     int bx, by, bz;
     BOX_INDEX_TO_WORLD_XYZ(boxIndex, bx, by, bz);
     // make the location numbers positive (y already is)
+    (void)by;
     bx += 100001;
     bz += 101031;
 
@@ -12982,7 +12984,7 @@ static void freeFaceRecordToPool(FaceRecord* face)
 {
     // simply decrement count - we assume faces are freed in reverse order of allocation
     gModel.faceRecordPool->count--;
-    face;   // done to make Release compiler happy
+    (void)face;   // done to make Release compiler happy
     assert(&(gModel.faceRecordPool->fr[gModel.faceRecordPool->count]) == face);
 }
 
@@ -13069,7 +13071,7 @@ static int saveTriangleFace(int boxIndex, int swatchLoc, int type, int dataVal, 
     //    !findFaceDimensions(rect, faceDirection, 0, 16, 0, 16, 0, 16) ||
     //    !lesserNeighborCoversRectangle(faceDirection, boxIndex, rect))
     //{
-    boxIndex;   // here purely to avoid compilation error - needed in commented code above
+    (void)boxIndex;   // here purely to avoid compilation error - needed in commented code above
 
         // output the triangle
         int uvIndices[3];
@@ -17017,7 +17019,7 @@ static int touchRecordCompare(void* context, const void* str1, const void* str2)
     TouchRecord* t2;
     t1 = (TouchRecord*)str1;
     t2 = (TouchRecord*)str2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
     // Blocks that had something in them originally (e.g. rails, redstone, or other things that got flattened)
     // are more significant than blocks of air, so the air should get covered up first so the rails aren't covered.
     // if the blocks are both air, or were both solid, then we need a different thing to test on.
@@ -17811,12 +17813,13 @@ static void hollowBottomOfModel()
                         // corner post hit - mark it as a post so it doesn't get super-hollowed later
                         // do this to only solid objects. This is done until we hit air.
                         // TODO: when we hit air we could continue, not sure that helps...
-                        if (!hollowDone[x * gBoxSize[Z] + z])
+                        if (!hollowDone[x * gBoxSize[Z] + z]) {
                             if (gBoxData[boxIndex].type > BLOCK_AIR)
                                 gBoxData[boxIndex].group = HOLLOW_AIR_GROUP;
                             else
                                 // stop making a post if we hit air. This OK? TODO
                                 hollowDone[x * gBoxSize[Z] + z] = (unsigned char)y;
+                        }
                     }
                 }
             }
@@ -18434,7 +18437,7 @@ static int tileIdCompare(void* context, const void* str1, const void* str2)
     FaceRecord* f2;
     f1 = *(FaceRecord**)str1;
     f2 = *(FaceRecord**)str2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
     if (f1->materialType == f2->materialType)
     {
         // tie break of the data value
@@ -18467,7 +18470,7 @@ static int tileUSDIdCompare(void* context, const void* str1, const void* str2)
     FaceRecord* f2;
     f1 = *(FaceRecord**)str1;
     f2 = *(FaceRecord**)str2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
     // compare swatchLocs
     int swatchLoc1 = gModel.uvIndexList[f1->uvIndex[0]].swatchLoc;
     int swatchLoc2 = gModel.uvIndexList[f2->uvIndex[0]].swatchLoc;
@@ -18503,7 +18506,7 @@ static int tileIdDeleteAndCompare(void* context, const void* str1, const void* s
     FaceRecord* f2;
     f1 = *(FaceRecord**)str1;
     f2 = *(FaceRecord**)str2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
     if (f1->normalIndex == HAS_BEEN_MERGED || f2->normalIndex == HAS_BEEN_MERGED)
     {
         // one or both faces deleted, walking dead, so put at end of list and be done
@@ -18548,7 +18551,7 @@ static int tileUSDIdDeleteAndCompare(void* context, const void* str1, const void
     FaceRecord* f2;
     f1 = *(FaceRecord**)str1;
     f2 = *(FaceRecord**)str2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
     if (f1->normalIndex == HAS_BEEN_MERGED || f2->normalIndex == HAS_BEEN_MERGED)
     {
         // one or both faces deleted, walking dead, so put at end of list and be done
@@ -18591,7 +18594,7 @@ static int faceIdCompare(void* context, const void* str1, const void* str2)
     FaceRecord* f2;
     f1 = *(FaceRecord**)str1;
     f2 = *(FaceRecord**)str2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
     if (f1->materialType == f2->materialType)
     {
         // tie break of the data value
@@ -18613,7 +18616,7 @@ static int instanceUSDCompare(void* context, const void* str1, const void* str2)
 {
     BlockInstance* f1;
     BlockInstance* f2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
 
     f1 = (BlockInstance*)str1;
     f2 = (BlockInstance*)str2;
@@ -27232,8 +27235,8 @@ static float retrieveMtlAlpha(int type)
 
 
 // the blocks that should be solid if valid water tile is not found
-int solidCount = 5;
-static int solidTable[] = { BLOCK_WATER, BLOCK_STATIONARY_WATER, BLOCK_LAVA, BLOCK_STATIONARY_LAVA, BLOCK_FIRE };
+// int solidCount = 5;
+// static int solidTable[] = { BLOCK_WATER, BLOCK_STATIONARY_WATER, BLOCK_LAVA, BLOCK_STATIONARY_LAVA, BLOCK_FIRE };
 
 static int createBaseMaterialTexture()
 {
@@ -28535,7 +28538,7 @@ static int writeAsciiSTLBox(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tight
 static int writeVRML2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightenedWorldBox, const wchar_t* curDir, const wchar_t* terrainFileName, wchar_t* cullSchemeSelected, ChangeBlockCommand* pCBC)
 {
     wchar_t wrlFileNameWithSuffix[MAX_PATH_AND_FILE];
-    const char* justWorldFileName;
+    // const char* justWorldFileName;
     char justTextureFileName[MAX_PATH_AND_FILE];	// without path
 
     char outputString[256];
@@ -28579,7 +28582,7 @@ static int writeVRML2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightene
     exportSingleMaterial = (!(gModel.options->exportFlags & EXPT_OUTPUT_OBJ_MTL_PER_TYPE)) ? true : false;
 
     WcharToChar(pWorldGuide->world, worldChar, MAX_PATH_AND_FILE);
-    justWorldFileName = removePathChar(worldChar);
+    // justWorldFileName = removePathChar(worldChar);
 
     sprintf_s(outputString, 256, "#VRML V2.0 utf8\n\n# VRML 97 (VRML2) file made by Mineways version %d.%02d, http://mineways.com\n", gMinewaysMajorVersion, gMinewaysMinorVersion);
     WERROR_MODEL(PortaWrite(gModelFile, outputString, strlen(outputString)));
@@ -28953,7 +28956,7 @@ static int chunkUSDCompare(void* context, const void* str1, const void* str2)
 {
     InstanceLocation* f1;
     InstanceLocation* f2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
 
     f1 = (InstanceLocation*)str1;
     f2 = (InstanceLocation*)str2;
@@ -29029,7 +29032,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
         strcpy_s(texturePath, MAX_PATH_AND_FILE, fullTexturePath);
     }
 
-    if (retCode |= openUSDFile(fileNameWithSuffix, gModelFile)) {
+    if ((retCode |= openUSDFile(fileNameWithSuffix, gModelFile))) {
         // cannot open file
         goto Exit;
     }
@@ -29056,7 +29059,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
 
     // write comments for Import Settings and write globals
     sprintf_s(outputString, 256, "    \"\"\"\n# USDA 1.0 file made by Mineways version %d.%02d, http://mineways.com\n", gMinewaysMajorVersion, gMinewaysMinorVersion);
-    if (retCode |= writeCommentUSD(outputString)) {
+    if ((retCode |= writeCommentUSD(outputString))) {
         // failed to write
         goto Exit;
     }
@@ -29064,7 +29067,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
     if (retCode >= MW_BEGIN_ERRORS) {
         goto Exit;
     }
-    if (retCode |= finishCommentsUSD(defaultPrim)) {
+    if ((retCode |= finishCommentsUSD(defaultPrim))) {
         // failed to write
         goto Exit;
     }
@@ -29075,7 +29078,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
 
     // add camera - add it only if lights are export
     if (gModel.options->pEFD->scaleLightsVal > 0.0f) {
-        if (retCode |= addCameraUSD()) {
+        if ((retCode |= addCameraUSD())) {
             // failed to write
             goto Exit;
         }
@@ -29084,7 +29087,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
     // create lighting, put outside of model - do before everything else, so that these are easier to find (no scrolling to the bottom)
     if (gModel.options->pEFD->scaleLightsVal > 0.0f) {
         // scale value is set > 0, so output lights
-        if (retCode |= createLightingUSD(fullTexturePath)) {
+        if ((retCode |= createLightingUSD(fullTexturePath))) {
             goto Exit;
         }
     }
@@ -29143,7 +29146,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
 
         // create block instance library
         char noExtraPath[] = "";
-        if (retCode |= createMeshesUSD(blockLibraryNameWithSuffix, materialLibraryName, singleTerrainFile, noExtraPath)) {
+        if ((retCode |= createMeshesUSD(blockLibraryNameWithSuffix, materialLibraryName, singleTerrainFile, noExtraPath))) {
             // failed to write
             goto Exit;
         }
@@ -29154,7 +29157,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
         qsort_s(gModel.faceList, gModel.faceCount, sizeof(FaceRecord*), tileUSDIdCompare, NULL);
 
         // create material library
-        if (retCode |= createMaterialsUSD(texturePath, "", materialLibraryNameWithSuffix, singleTerrainFile, noExtraPath)) {
+        if ((retCode |= createMaterialsUSD(texturePath, "", materialLibraryNameWithSuffix, singleTerrainFile, noExtraPath))) {
             // failed to write
             goto Exit;
         }
@@ -29355,7 +29358,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
     }
     else {
 
-        if (retCode |= createMeshesUSD(NULL, NULL, singleTerrainFile, slashDefaultPrim)) {
+        if ((retCode |= createMeshesUSD(NULL, NULL, singleTerrainFile, slashDefaultPrim))) {
             goto Exit;
         }
     } // instancing endif
@@ -29368,7 +29371,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
     if (!gModel.instancing) {
         char mdlPath[MAX_PATH_AND_FILE];
         strcpy_s(mdlPath, MAX_PATH_AND_FILE, gMaterialFileSubdirChar);
-        if (retCode |= createMaterialsUSD(texturePath, mdlPath, NULL, singleTerrainFile, slashDefaultPrim)) {
+        if ((retCode |= createMaterialsUSD(texturePath, mdlPath, NULL, singleTerrainFile, slashDefaultPrim))) {
             // failed to write
             goto Exit;
         }
@@ -29376,7 +29379,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
 
     // create custom MDLs, if needed
     if (gModel.exportMDL && gModel.customMaterial) {
-        if (retCode |= writeMDLforUSD(gMaterialDirectoryPath)) {
+        if ((retCode |= writeMDLforUSD(gMaterialDirectoryPath))) {
             goto Exit;
         }
     }
@@ -29386,7 +29389,7 @@ static int writeUSD2Box(WorldGuide* pWorldGuide, IBox* worldBox, IBox* tightened
     WERROR_MODEL(PortaWrite(gModelFile, outputString, strlen(outputString)));
 
 Exit:
-    if (retCode |= closeUSDFile(gModelFile)) {
+    if ((retCode |= closeUSDFile(gModelFile))) {
         // failed to quit - really, we're done, so nothing to do, but left in case someday we add more code below.
     }
 
@@ -29922,7 +29925,7 @@ static int createMeshesUSD(wchar_t* blockLibraryPath, char *materialLibrary, boo
         // output a series of meshes, grouped by block
         // Open a new file for output
         PORTAFILE blockFile;
-        if (retCode |= openUSDFile(blockLibraryPath, blockFile)) {
+        if ((retCode |= openUSDFile(blockLibraryPath, blockFile))) {
             // cannot open file
             goto Exit;
         }
@@ -30014,7 +30017,7 @@ static int createMeshesUSD(wchar_t* blockLibraryPath, char *materialLibrary, boo
         strcpy_s(outputString, 256, "\n} # end Blocks\n");
         WERROR_MODEL(PortaWrite(blockFile, outputString, strlen(outputString)));
 
-        if (retCode |= closeUSDFile(blockFile)) {
+        if ((retCode |= closeUSDFile(blockFile))) {
             // failed to quit - really, we're done, so nothing to do, but left in case someday we add more code below.
         }
     }
@@ -30795,7 +30798,7 @@ static int createMaterialsUSD(char *texturePath, char *mdlPath, wchar_t *mtlLibr
         strcpy_s(prefixPath, MAX_PATH_AND_FILE, "/Blocks");
         // output materials to a separate material library
         // Open a new file for output
-        if (retCode |= openUSDFile(mtlLibraryFilename, materialFile)) {
+        if ((retCode |= openUSDFile(mtlLibraryFilename, materialFile))) {
             // cannot open file
             goto Exit;
         }
@@ -32438,7 +32441,7 @@ static int createMaterialsUSD(char *texturePath, char *mdlPath, wchar_t *mtlLibr
     if (mtlLibraryFilename != NULL) {
         strcpy_s(outputString, 256, "} # close Scope \"Blocks\"\n");
         WERROR_MODEL(PortaWrite(materialFile, outputString, strlen(outputString)));
-        if (retCode |= closeUSDFile(materialFile)) {
+        if ((retCode |= closeUSDFile(materialFile))) {
             // failed to quit - really, we're done, so nothing to do, but left in case someday we add more code below.
         }
     }
@@ -34269,7 +34272,7 @@ static int writeStatistics(HANDLE fh, int (*printFunc)(char *), WorldGuide* pWor
         WRITE_STAT;
     }
 
-    if ((gModel.options->pEFD->fileType == FILE_TYPE_USD)) {
+    if (gModel.options->pEFD->fileType == FILE_TYPE_USD) {
         sprintf_s(outputString, 256, "# Export MDL: %s\n", gModel.options->pEFD->chkExportMDL ? "YES" : "no");
         WRITE_STAT;
 
@@ -36750,8 +36753,8 @@ static bool faceCanTile(int faceId)
     //    return true;
     //}
 
-    static int countTrue = 0;
-    static int countFalse = 0;
+    // static int countTrue = 0;
+    // static int countFalse = 0;
     // are the UVs from edge to edge, so we know it's a full face?
     // Loop cleverness. We could go 0 through 3, to be safe, but we know that almost all (except triangles for sloped rails for 3d printing) quads in Mineways
     // are rectangular. So, we can test just the opposite corners, i += 2, to make sure they have UVs that are 0.0 or 1.0 (which is 0 or 16 in the normalized set here).
@@ -36877,7 +36880,7 @@ static int simplifyFaceCompareYminor(void* context, const void* str1, const void
 {
     SimplifyFaceRecord* f1 = *(SimplifyFaceRecord**)str1;
     SimplifyFaceRecord* f2 = *(SimplifyFaceRecord**)str2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
     // compare normal directions and distances
     if (f1->normalDirection == f2->normalDirection) {
         if (f1->normalDistance == f2->normalDistance) {
@@ -36898,7 +36901,7 @@ static int simplifyFaceCompareXminor(void* context, const void* str1, const void
 {
     SimplifyFaceRecord* f1 = *(SimplifyFaceRecord**)str1;
     SimplifyFaceRecord* f2 = *(SimplifyFaceRecord**)str2;
-    context;    // make a useless reference to the unused variable, to avoid C4100 warning
+    (void)context;    // make a useless reference to the unused variable, to avoid C4100 warning
     // Not needed, should already match: compare normal directions and distances
     //if (f1->normalDirection == f2->normalDirection) {
         //if (f1->normalDistance == f2->normalDistance) {

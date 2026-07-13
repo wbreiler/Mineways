@@ -265,3 +265,9 @@ first. Left in the backlog below rather than half-implementing a
 - [x] Bundle as `.app` with `Info.plist` and icon (`make app` target)
 - [x] Locate `terrainExt.png` relative to bundle `Resources/` directory (GetResourcesDir() with exe-dir fallback)
 - [x] Custom terrain file picker (`File > Choose Terrain File`)
+
+## Code Health
+- [x] Clean up clang++ warnings surfaced by macOS CI build (missing braces, unused variables, assignment-in-condition, dangling else, null-conversion, etc.) across:
+  - `Win/blockInfo.cpp`
+  - `Win/ObjFileManip.cpp`
+  - `Win/MinewaysMap.cpp`
