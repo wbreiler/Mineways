@@ -486,11 +486,11 @@ int wmain(int argc, wchar_t* argv[])
 			reportReadError(rc, terrainBase);
 			// simply can't find file?
 			if (rc == 78) {
-				wsprintf(gErrorString, L"    The file terrainBase.png must be present in your current directory (i.e., where you're running things from\n"
+				swprintf_s(gErrorString, _countof(gErrorString), L"    The file terrainBase.png must be present in your current directory (i.e., where you're running things from\n"
 					"    which might not necessarily be where TileMaker.exe is), or you must specify its path and name by using the\n"
 					"    command line option '-i c:\\your_path\\terrainBase.png' (with 'your_path' being where it is located).\n"
 				);
-				wprintf(gErrorString);
+				wprintf(L"%s", gErrorString);
 				printHelp();
 			}
 			return 1;
@@ -561,7 +561,7 @@ int wmain(int argc, wchar_t* argv[])
 		int fileCount = searchDirectoryForTiles(&gFG, &gChestGrid, &gPotGrid, &gShelfGrid, *inputDirectoryPtr, wcslen(*inputDirectoryPtr), verbose, alternate, true, warnUnused, warnDups);
 		warnDups = false;
 		if (fileCount < 0) {
-			wsprintf(gErrorString, L"***** ERROR: cannot access the directory '%s' (Windows error code # %d). Ignoring directory.\n", *inputDirectoryPtr, GetLastError());
+			swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR: cannot access the directory '%s' (Windows error code # %d). Ignoring directory.\n", *inputDirectoryPtr, GetLastError());
 			saveErrorForEnd();
 			gErrorCount++;
 		}
@@ -1899,7 +1899,7 @@ int testFileForPowerOfTwo(int width, int height, const wchar_t* cFileName, bool 
 {
 	int fail_code = 0;
 	if (fmod(log2((float)(width)), 1.0f) != 0.0f) {
-		wsprintf(gErrorString, L"***** ERROR: file '%s'\n  has a width of %d that is not a power of two.\n  This will cause copying errors, so TileMaker ignores it.\n  We recommend you remove or resize this file.\n", cFileName, width);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR: file '%s'\n  has a width of %d that is not a power of two.\n  This will cause copying errors, so TileMaker ignores it.\n  We recommend you remove or resize this file.\n", cFileName, width);
 		saveErrorForEnd();
 		gErrorCount++;
 		fail_code = 1;
@@ -1907,14 +1907,14 @@ int testFileForPowerOfTwo(int width, int height, const wchar_t* cFileName, bool 
 	// check if height is not a power of two AND is not a multiple of the width.
 	// if not square (i.e., a chest), the height may be half that of the width.
 	else if (fmod((float)(height) / (float)width, square ? 1.0f : 0.5f) != 0.0f) {
-		wsprintf(gErrorString, L"***** ERROR: file '%s'\n  has a height of %d that is not %s its width of %d.\n  This will cause copying errors, so TileMaker ignores it.\n  We recommend you remove or resize this file.\n", cFileName, height, square ? L"equal to" : L"a multiple of", width);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR: file '%s'\n  has a height of %d that is not %s its width of %d.\n  This will cause copying errors, so TileMaker ignores it.\n  We recommend you remove or resize this file.\n", cFileName, height, square ? L"equal to" : L"a multiple of", width);
 		saveErrorForEnd();
 		gErrorCount++;
 		fail_code = 1;
 	}
 	// not sure I actually need this test - the one above should cover it, I think - but left in, just in case
 	if (square && width > height && fail_code == 0) {
-		wsprintf(gErrorString, L"***** ERROR: file '%s'\n  has a height of %d that is less than its width of %d.\n  This will cause copying errors, so TileMaker ignores it.\n  We recommend you remove or resize this file.\n", cFileName, height, width);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR: file '%s'\n  has a height of %d that is less than its width of %d.\n  This will cause copying errors, so TileMaker ignores it.\n  We recommend you remove or resize this file.\n", cFileName, height, width);
 		saveErrorForEnd();
 		gErrorCount++;
 		fail_code = 1;
@@ -1929,84 +1929,87 @@ static void reportReadError(int rc, const wchar_t* filename)
 {
 	switch (rc) {
 	case 1:
-		wsprintf(gErrorString, L"***** ERROR [%s] is not a PNG file: incorrect signature.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] is not a PNG file: incorrect signature.\n", filename);
 		break;
 	case 2:
-		wsprintf(gErrorString, L"***** ERROR [%s] has bad IHDR (libpng longjmp).\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] has bad IHDR (libpng longjmp).\n", filename);
 		break;
 	case 4:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - insufficient memory.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - insufficient memory.\n", filename);
 		break;
 	case 27:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - the data length is smaller than the length of a PNG header.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - the data length is smaller than the length of a PNG header.\n", filename);
 		break;
 	case 28:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - the first 8 bytes are not the correct PNG signature.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - the first 8 bytes are not the correct PNG signature.\n", filename);
 		break;
 	case 29:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - file doesn't start with a IHDR chunk.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - file doesn't start with a IHDR chunk.\n", filename);
 		break;
 	case 32:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - only compression method 0 is allowed in the specification.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - only compression method 0 is allowed in the specification.\n", filename);
 		break;
 	case 33:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - only filter method 0 is allowed in the specification.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - only filter method 0 is allowed in the specification.\n", filename);
 		break;
 	case 34:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - only interlace methods 0 and 1 exist in the specification.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - only interlace methods 0 and 1 exist in the specification.\n", filename);
 		break;
 	case 48:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - the given data is empty.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - the given data is empty.\n", filename);
 		break;
 	case 57:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - invalid CRC.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - invalid CRC.\n", filename);
 		break;
 	case 63:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - chunk too long.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - chunk too long.\n", filename);
 		break;
 	case 78:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - file not found or could not be read.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - file not found or could not be read.\n", filename);
 		break;
 	case 79:
-		wsprintf(gErrorString, L"***** ERROR [%s] write failed - directory not found. Please create the directory.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] write failed - directory not found. Please create the directory.\n", filename);
 		break;
 	case 83:
-		wsprintf(gErrorString, L"***** ERROR [%s] allocation failed. Image file is too large for your system to handle?\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] allocation failed. Image file is too large for your system to handle?\n", filename);
 		break;
 	case 93:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - invalid image size.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - invalid image size.\n", filename);
 		break;
 	case 94:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - header size must be 13 bytes.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - header size must be 13 bytes.\n", filename);
 		break;
 	case 102:
-		wsprintf(gErrorString, L"***** ERROR [%s] - could not read Targa TGA file header.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] - could not read Targa TGA file header.\n", filename);
 		break;
 	case 103:
-		wsprintf(gErrorString, L"***** ERROR [%s] - could not read Targa TGA file data.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] - could not read Targa TGA file data.\n", filename);
 		break;
 	case 104:
-		wsprintf(gErrorString, L"***** ERROR [%s] - unsupported Targa TGA file type.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] - unsupported Targa TGA file type.\n", filename);
+		break;
+	case IMAGE_ERROR_UNSUPPORTED_FORMAT:
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] - unsupported image channel format.\n", filename);
 		break;
 	case 999:
-		wsprintf(gErrorString, L"***** ERROR [%s] - unknown image file type.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] - unknown image file type.\n", filename);
 		break;
 	default:
-		wsprintf(gErrorString, L"***** ERROR [%s] read failed - unknown readpng_init() or targa error.\n", filename);
+		swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR [%s] read failed - unknown readpng_init() or targa error.\n", filename);
 		break;
 	}
 	saveErrorForEnd();
 	gErrorCount++;
 
 	if (rc != 27 && rc != 78 && rc != 79 && rc < 100) {
-		wsprintf(gErrorString, L"Often this means the PNG file has some small bit of information that TileMaker cannot\n  handle. You might be able to fix this error by opening this PNG file in\n  Irfanview or other viewer and then saving it again. Doing so might clear\n  out any irregularity that TileMaker's PNG reader dies on.\n");
+		swprintf_s(gErrorString, _countof(gErrorString), L"Often this means the PNG file has some small bit of information that TileMaker cannot\n  handle. You might be able to fix this error by opening this PNG file in\n  Irfanview or other viewer and then saving it again. Doing so might clear\n  out any irregularity that TileMaker's PNG reader dies on.\n");
 		saveErrorForEnd();
 	}
 }
 
 static void saveErrorForEnd()
 {
-	wprintf(gErrorString);
+	wprintf(L"%s", gErrorString);
 	wcscat_s(gConcatErrorString, CONCAT_ERROR_LENGTH, L"  ");
 	wcscat_s(gConcatErrorString, CONCAT_ERROR_LENGTH, gErrorString);
 }
@@ -2138,7 +2141,7 @@ static int copyPNGTile(progimage_info* dst, int channels, unsigned long dst_x, u
 		tileSize = (int)((float)dst->width / zoom) / 16;
 
 		if (tileSize <= 0) {
-			wsprintf(gErrorString, L"***** ERROR: somehow, the largest tile size is computed to be %d - this needs to be a positive number.\n", tileSize);
+			swprintf_s(gErrorString, _countof(gErrorString), L"***** ERROR: somehow, the largest tile size is computed to be %d - this needs to be a positive number.\n", tileSize);
 			saveErrorForEnd();
 			gErrorCount++;
 			return 1;
@@ -2825,6 +2828,7 @@ static int convertHeightfieldToXYZ(progimage_info* src, float heightfieldScale)
 			*src_data++ = (unsigned char)(((1.0f / length + 1.0f) / 2.0f) * 255.0f + 0.5f);
 		}
 	}
+	delete phf;
 	return 1;
 }
 

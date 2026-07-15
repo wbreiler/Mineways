@@ -41,6 +41,9 @@ int readtga(progimage_info* im, wchar_t* filename, LodePNGColorType colortype)
 {
     im->width = im->height = 0;
 
+    if (colortype != LCT_GREY && colortype != LCT_RGB && colortype != LCT_RGBA)
+        return IMAGE_ERROR_UNSUPPORTED_FORMAT;
+
     FILE* f;
     _wfopen_s(&f, filename, L"rb");
     if (f == NULL)
@@ -83,13 +86,13 @@ int readtga(progimage_info* im, wchar_t* filename, LodePNGColorType colortype)
     tga::Image image;
     image.bytesPerPixel = header.bytesPerPixel();
     size_t rowstride = (size_t)header.width * (size_t)image.bytesPerPixel;
-    if (rowstride == 0 || rowstride > (size_t)std::numeric_limits<uint32_t>::max() ||
-        (size_t)header.height > std::numeric_limits<size_t>::max() / rowstride) {
+    if (rowstride == 0 || rowstride > (size_t)(std::numeric_limits<uint32_t>::max)() ||
+        (size_t)header.height > (std::numeric_limits<size_t>::max)() / rowstride) {
         fclose(f);
         return 83;
     }
     size_t imageSize = rowstride * (size_t)header.height;
-    if (imageSize == 0 || imageSize > (size_t)std::numeric_limits<uint32_t>::max()) {
+    if (imageSize == 0 || imageSize > (size_t)(std::numeric_limits<uint32_t>::max)()) {
         fclose(f);
         return 83;
     }
@@ -138,9 +141,19 @@ int readtga(progimage_info* im, wchar_t* filename, LodePNGColorType colortype)
             channels_out = (colortype == LCT_RGB) ? 3 : 1;
             break;
         }
-        int num_pixels = header.width * header.height;
-        im->image_data.resize(channels_out * num_pixels);
-        int i;
+        size_t num_pixels = (size_t)header.width * (size_t)header.height;
+        if ((size_t)channels_out > (std::numeric_limits<size_t>::max)() / num_pixels) {
+            im->width = im->height = 0;
+            return 83;
+        }
+        try {
+            im->image_data.resize((size_t)channels_out * num_pixels);
+        }
+        catch (...) {
+            im->width = im->height = 0;
+            return 83;
+        }
+        size_t i;
         unsigned char* src_data = &buffer[0];
         unsigned char* dst_data = &im->image_data[0];
         switch (channels_in) {
@@ -238,7 +251,8 @@ int readtgaheader(progimage_info* im, wchar_t* filename, LodePNGColorType& color
         colortype = LCT_GREY;
         break;
     default:
-        assert(0);
+        fclose(f);
+        return IMAGE_ERROR_UNSUPPORTED_FORMAT;
     case 3:
         colortype = LCT_RGB;
         break;
