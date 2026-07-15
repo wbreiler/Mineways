@@ -307,7 +307,10 @@ static bool CommandExportFile(ImportedSet& is, wxString& error, int fileMode, co
     }
 
     wchar_t wpath[MAX_PATH_AND_FILE];
-    mbstowcs(wpath, fileName.utf8_str(), MAX_PATH_AND_FILE);
+    if (!_mwUtf8ToWideBuffer(fileName.utf8_str(), wpath, MAX_PATH_AND_FILE)) {
+        error = "export path is invalid or too long.";
+        return false;
+    }
     wcsncpy(GetExportPathBuf(), wpath, 4095);
     GetExportPathBuf()[4095] = L'\0';
 
@@ -518,7 +521,8 @@ static int InterpretImportLine(char* line, ImportedSet& is)
         if (sscanf(strPtr, "%99s", string1) != 1) { SaveErrorMessage(is, "could not find units for the model itself."); return INTERPRETER_FOUND_ERROR; }
         int i;
         for (i = 0; i < MODELS_UNITS_TABLE_SIZE; i++) {
-            char nameBuf[64]; wcstombs(nameBuf, gUnitTypeTable[i].wname, sizeof(nameBuf));
+            char nameBuf[64];
+            if (!_mwWideToUtf8Buffer(gUnitTypeTable[i].wname, nameBuf, sizeof(nameBuf))) continue;
             if (_stricmp(nameBuf, string1) == 0) { if (is.processData) is.pEFD->comboModelUnits[is.pEFD->fileType] = i; break; }
         }
         if (i >= MODELS_UNITS_TABLE_SIZE) { SaveErrorMessage(is, "could not interpret unit type for the model itself.", strPtr); return INTERPRETER_FOUND_ERROR; }
@@ -548,6 +552,17 @@ static int InterpretImportLine(char* line, ImportedSet& is)
         int i;
         for (i = 0; i < n; i++) if (_stricmp(outputTypeString[i], string1) == 0) break;
         if (i >= n) { SaveErrorMessage(is, "could not interpret file type (solid color, textured, etc.).", strPtr); return INTERPRETER_FOUND_ERROR; }
+        char* tileDir = nullptr;
+        if (outputTypeCorrespondence[i] == 4) {
+            tileDir = FindLineDataNoCase(line, "File type: Export individual textures to directory ");
+            if (!tileDir) tileDir = FindLineDataNoCase(line, "File type: Export separate textures to directory ");
+            if (!tileDir) tileDir = FindLineDataNoCase(line, "File type: Export tiles for textures to directory ");
+            if (tileDir && strlen(tileDir) >= MAX_PATH) {
+                SaveErrorMessage(is, wxString::Format(
+                    "tile texture directory is too long (maximum %d UTF-8 bytes).", MAX_PATH - 1));
+                return INTERPRETER_FOUND_ERROR;
+            }
+        }
         if (is.processData) {
             ExportFileData* efd = is.pEFD;
             int ft = efd->fileType;
@@ -560,10 +575,7 @@ static int InterpretImportLine(char* line, ImportedSet& is)
             case 3: efd->radioExportFullTexture[ft] = 1; break;
             case 4: {
                 efd->radioExportTileTextures[ft] = 1;
-                char* dirPtr = FindLineDataNoCase(line, "File type: Export individual textures to directory ");
-                if (!dirPtr) dirPtr = FindLineDataNoCase(line, "File type: Export separate textures to directory ");
-                if (!dirPtr) dirPtr = FindLineDataNoCase(line, "File type: Export tiles for textures to directory ");
-                if (dirPtr) strncpy(efd->tileDirString, dirPtr, MAX_PATH - 1);
+                if (tileDir) memcpy(efd->tileDirString, tileDir, strlen(tileDir) + 1);
                 break;
             }
             }
@@ -932,9 +944,47 @@ TryOtherCommands:
 static bool ReadAllLines(const wxString& path, wxArrayString& lines, wxString& error)
 {
     wxFFile fh(path, "rb");
-    if (!fh.IsOpened()) { error = wxString::Format("Error: could not read file %s", path); return false; }
-    wxString contents;
-    fh.ReadAll(&contents, wxConvUTF8);
+    if (!fh.IsOpened()) {
+        error = wxString::Format("Error: could not open file %s", path);
+        return false;
+    }
+
+    wxFileOffset fileLength = fh.Length();
+    if (fileLength == wxInvalidOffset || (uint64_t)fileLength > SIZE_MAX) {
+        error = wxString::Format("Error: could not determine the size of file %s", path);
+        return false;
+    }
+    size_t byteCount = (size_t)fileLength;
+    std::vector<char> bytes;
+    try {
+        bytes.resize(byteCount);
+    } catch (const std::bad_alloc&) {
+        error = wxString::Format("Error: not enough memory to read file %s", path);
+        return false;
+    }
+    if (byteCount > 0 && fh.Read(bytes.data(), byteCount) != byteCount) {
+        error = wxString::Format("Error: failed while reading file %s", path);
+        return false;
+    }
+
+    size_t wideLength = wxConvUTF8.ToWChar(nullptr, 0, byteCount ? bytes.data() : "", byteCount);
+    if (wideLength == wxCONV_FAILED) {
+        error = wxString::Format("Error: file is not valid UTF-8: %s", path);
+        return false;
+    }
+    std::vector<wchar_t> wide;
+    try {
+        wide.resize(wideLength + 1, L'\0');
+    } catch (const std::bad_alloc&) {
+        error = wxString::Format("Error: not enough memory to decode file %s", path);
+        return false;
+    }
+    if (wideLength > 0 &&
+        wxConvUTF8.ToWChar(wide.data(), wide.size(), bytes.data(), byteCount) == wxCONV_FAILED) {
+        error = wxString::Format("Error: could not decode UTF-8 file %s", path);
+        return false;
+    }
+    wxString contents(wide.data(), wideLength);
     contents.Replace("\r\n", "\n");
     contents.Replace("\r", "\n");
     lines = wxSplit(contents, '\n');

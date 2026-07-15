@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -184,13 +185,92 @@ static inline errno_t wcsncpy_s(wchar_t* dst, size_t dstSz, const wchar_t* src, 
 #define wcsncat_s(dst, n, src, cnt) wcsncat(dst, src, cnt)
 #endif
 
-// _wfopen_s: Windows wide-path fopen; macOS needs wcstombs conversion
+// Checked conversions used by all wide-path wrappers below. The application sets a
+// UTF-8 locale at startup, so the platform multibyte encoding is UTF-8. Both helpers
+// fail instead of returning a truncated, unterminated path.
+static inline char* _mwWideToUtf8Alloc(const wchar_t* src)
+{
+    if (!src) { errno = EINVAL; return NULL; }
+    mbstate_t state = {};
+    const wchar_t* scan = src;
+    size_t len = wcsrtombs(NULL, &scan, 0, &state);
+    if (len == (size_t)-1) return NULL;
+    char* dst = (char*)malloc(len + 1);
+    if (!dst) return NULL;
+    state = {};
+    scan = src;
+    if (wcsrtombs(dst, &scan, len + 1, &state) != len) {
+        free(dst);
+        return NULL;
+    }
+    return dst;
+}
+
+static inline bool _mwWideToUtf8Buffer(const wchar_t* src, char* dst, size_t dstSize)
+{
+    if (!dst || dstSize == 0) { errno = EINVAL; return false; }
+    dst[0] = '\0';
+    char* converted = _mwWideToUtf8Alloc(src);
+    if (!converted) return false;
+    size_t len = strlen(converted);
+    if (len >= dstSize) {
+        free(converted);
+        errno = ERANGE;
+        return false;
+    }
+    memcpy(dst, converted, len + 1);
+    free(converted);
+    return true;
+}
+
+static inline bool _mwUtf8ToWideBuffer(const char* src, wchar_t* dst, size_t dstSize)
+{
+    if (!src || !dst || dstSize == 0) { errno = EINVAL; return false; }
+    dst[0] = L'\0';
+    mbstate_t state = {};
+    const char* scan = src;
+    size_t len = mbsrtowcs(NULL, &scan, 0, &state);
+    if (len == (size_t)-1) return false;
+    if (len >= dstSize) { errno = ERANGE; return false; }
+    state = {};
+    scan = src;
+    return mbsrtowcs(dst, &scan, dstSize, &state) == len;
+}
+
+static inline char* _mwNormalizeWidePath(const wchar_t* wpath)
+{
+    char* path = _mwWideToUtf8Alloc(wpath);
+    if (!path) return NULL;
+    if (path[0] != '~' || (path[1] != '/' && path[1] != '\0')) return path;
+
+    const char* home = getenv("HOME");
+    if (!home) return path;
+    size_t homeLen = strlen(home);
+    size_t suffixLen = strlen(path + 1);
+    if (homeLen > SIZE_MAX - suffixLen - 1) {
+        free(path);
+        errno = EOVERFLOW;
+        return NULL;
+    }
+    char* expanded = (char*)malloc(homeLen + suffixLen + 1);
+    if (!expanded) { free(path); return NULL; }
+    memcpy(expanded, home, homeLen);
+    memcpy(expanded + homeLen, path + 1, suffixLen + 1);
+    free(path);
+    return expanded;
+}
+
+// _wfopen_s: Windows wide-path fopen; macOS needs checked conversion
 static inline int _wfopen_s(FILE** pFile, const wchar_t* path, const wchar_t* mode)
 {
-    char p[4096], m[32];
-    wcstombs(p, path, sizeof(p));
-    wcstombs(m, mode, sizeof(m));
+    if (!pFile) return EINVAL;
+    *pFile = NULL;
+    char* p = _mwNormalizeWidePath(path);
+    char* m = _mwWideToUtf8Alloc(mode);
+    if (!p || !m) { free(p); free(m); return errno ? errno : EINVAL; }
     *pFile = fopen(p, m);
+    free(p);
+    free(m);
     return (*pFile == NULL) ? 1 : 0;
 }
 
@@ -202,16 +282,60 @@ static inline int MultiByteToWideChar(unsigned /*cp*/, unsigned /*flags*/,
                                        const char* mbstr, int mblen,
                                        wchar_t* wcstr, int wclen)
 {
-    if (mblen == -1) mblen = (int)strlen(mbstr) + 1;
-    return (int)mbstowcs(wcstr, mbstr, (size_t)wclen);
+    if (!mbstr || mblen < -1 || wclen < 0) { errno = EINVAL; return 0; }
+    size_t inputLen = mblen == -1 ? strlen(mbstr) : (size_t)mblen;
+    bool includeNull = mblen == -1 || (inputLen > 0 && mbstr[inputLen - 1] == '\0');
+    if (mblen != -1 && includeNull) inputLen--;
+    char* input = (char*)malloc(inputLen + 1);
+    if (!input) return 0;
+    memcpy(input, mbstr, inputLen);
+    input[inputLen] = '\0';
+    mbstate_t state = {};
+    const char* scan = input;
+    size_t converted = mbsrtowcs(NULL, &scan, 0, &state);
+    if (converted == (size_t)-1 || converted > (size_t)INT_MAX - (includeNull ? 1 : 0)) {
+        free(input);
+        return 0;
+    }
+    size_t required = converted + (includeNull ? 1 : 0);
+    if (!wcstr || wclen == 0) { free(input); return (int)required; }
+    if ((size_t)wclen < required) { free(input); errno = ERANGE; return 0; }
+    state = {};
+    scan = input;
+    size_t result = mbsrtowcs(wcstr, &scan, required, &state);
+    free(input);
+    if (result != converted) return 0;
+    return (int)required;
 }
 static inline int WideCharToMultiByte(unsigned /*cp*/, unsigned /*flags*/,
                                        const wchar_t* wcstr, int wclen,
                                        char* mbstr, int mblen,
                                        const char* /*dflt*/, int* /*used*/)
 {
-    if (wclen == -1) wclen = (int)wcslen(wcstr) + 1;
-    return (int)wcstombs(mbstr, wcstr, (size_t)mblen);
+    if (!wcstr || wclen < -1 || mblen < 0) { errno = EINVAL; return 0; }
+    size_t inputLen = wclen == -1 ? wcslen(wcstr) : (size_t)wclen;
+    bool includeNull = wclen == -1 || (inputLen > 0 && wcstr[inputLen - 1] == L'\0');
+    if (wclen != -1 && includeNull) inputLen--;
+    wchar_t* input = (wchar_t*)malloc((inputLen + 1) * sizeof(wchar_t));
+    if (!input) return 0;
+    memcpy(input, wcstr, inputLen * sizeof(wchar_t));
+    input[inputLen] = L'\0';
+    mbstate_t state = {};
+    const wchar_t* scan = input;
+    size_t converted = wcsrtombs(NULL, &scan, 0, &state);
+    if (converted == (size_t)-1 || converted > (size_t)INT_MAX - (includeNull ? 1 : 0)) {
+        free(input);
+        return 0;
+    }
+    size_t required = converted + (includeNull ? 1 : 0);
+    if (!mbstr || mblen == 0) { free(input); return (int)required; }
+    if ((size_t)mblen < required) { free(input); errno = ERANGE; return 0; }
+    state = {};
+    scan = input;
+    size_t result = wcsrtombs(mbstr, &scan, required, &state);
+    free(input);
+    if (result != converted) return 0;
+    return (int)required;
 }
 
 // ── Win32 filesystem stubs ────────────────────────────────────────────────────
@@ -220,65 +344,75 @@ static inline DWORD GetLastError() { return (DWORD)errno; }
 
 static inline BOOL CreateDirectoryW(const wchar_t* wpath, void* /*sa*/)
 {
-    char path[4096];
-    wcstombs(path, wpath, sizeof(path));
-    return (mkdir(path, 0755) == 0 || errno == EEXIST) ? TRUE : FALSE;
+    char* path = _mwNormalizeWidePath(wpath);
+    if (!path) return FALSE;
+    BOOL result = (mkdir(path, 0755) == 0 || errno == EEXIST) ? TRUE : FALSE;
+    free(path);
+    return result;
 }
 
 // ── Win32 file I/O stubs (maps to fwrite/fread via HANDLE=FILE*) ─────────────
 static inline BOOL WriteFile(HANDLE h, const void* buf, DWORD len,
                               DWORD* written, void* /*ov*/)
 {
+    if (!h || (!buf && len != 0)) { errno = EINVAL; return FALSE; }
     size_t n = fwrite(buf, 1, len, h);
     if (written) *written = (DWORD)n;
-    return (n == (size_t)len) ? TRUE : FALSE;
+    return (n == (size_t)len && !ferror(h)) ? TRUE : FALSE;
 }
 
 static inline BOOL ReadFile(HANDLE h, void* buf, DWORD len,
                              DWORD* nread, void* /*ov*/)
 {
+    if (!h || (!buf && len != 0)) { errno = EINVAL; return FALSE; }
     size_t n = fread(buf, 1, len, h);
     if (nread) *nread = (DWORD)n;
-    return TRUE;
+    return ferror(h) ? FALSE : TRUE;
 }
 
-static inline DWORD GetFileSize(HANDLE h, DWORD* /*high*/)
+static inline DWORD GetFileSize(HANDLE h, DWORD* high)
 {
-    long cur = ftell(h);
-    fseek(h, 0, SEEK_END);
-    long sz = ftell(h);
-    fseek(h, cur, SEEK_SET);
-    return (DWORD)sz;
+    if (!h) { errno = EINVAL; return 0xFFFFFFFFu; }
+    off_t cur = ftello(h);
+    if (cur < 0 || fseeko(h, 0, SEEK_END) != 0) return 0xFFFFFFFFu;
+    off_t size = ftello(h);
+    if (fseeko(h, cur, SEEK_SET) != 0 || size < 0) return 0xFFFFFFFFu;
+    uint64_t usize = (uint64_t)size;
+    if (high) {
+        *high = (DWORD)(usize >> 32);
+    } else if (usize > UINT32_MAX) {
+        // Callers using the low-word-only form cannot represent this file.
+        errno = EOVERFLOW;
+        return 0xFFFFFFFFu;
+    }
+    return (DWORD)(usize & UINT32_MAX);
 }
 
 // ── Wide-path PortaOpen/Create/Append (converts wchar_t* → UTF-8) ─────────────
 // These are referenced by macros in stdafx.h below
 static inline FILE* _mwPortaOpenW(const wchar_t* wpath)
 {
-    char path[4096];
-    wcstombs(path, wpath, sizeof(path));
-    return fopen(path, "rb");
+    char* path = _mwNormalizeWidePath(wpath);
+    if (!path) return NULL;
+    FILE* file = fopen(path, "rb");
+    free(path);
+    return file;
 }
 static inline FILE* _mwPortaAppendW(const wchar_t* wpath)
 {
-    char path[4096];
-    wcstombs(path, wpath, sizeof(path));
-    return fopen(path, "a");
+    char* path = _mwNormalizeWidePath(wpath);
+    if (!path) return NULL;
+    FILE* file = fopen(path, "a");
+    free(path);
+    return file;
 }
 static inline FILE* _mwPortaCreateW(const wchar_t* wpath)
 {
-    char path[4096];
-    wcstombs(path, wpath, sizeof(path));
-    // Expand leading ~/ in case caller didn't (fopen won't do it)
-    if (path[0] == '~' && (path[1] == '/' || path[1] == '\0')) {
-        const char* home = getenv("HOME");
-        if (home) {
-            char expanded[4096];
-            snprintf(expanded, sizeof(expanded), "%s%s", home, path + 1);
-            return fopen(expanded, "wb");
-        }
-    }
-    return fopen(path, "wb");
+    char* path = _mwNormalizeWidePath(wpath);
+    if (!path) return NULL;
+    FILE* file = fopen(path, "wb");
+    free(path);
+    return file;
 }
 
 // ── Win32 directory enumeration (POSIX opendir/readdir/fnmatch backend) ───────
@@ -292,9 +426,12 @@ static inline FILE* _mwPortaCreateW(const wchar_t* wpath)
 
 static inline DWORD GetFileAttributesW(const wchar_t* wpath)
 {
-    char path[4096]; wcstombs(path, wpath, sizeof(path));
+    char* path = _mwNormalizeWidePath(wpath);
+    if (!path) return INVALID_FILE_ATTRIBUTES;
     struct stat st;
-    if (stat(path, &st) != 0) return INVALID_FILE_ATTRIBUTES;
+    int result = stat(path, &st);
+    free(path);
+    if (result != 0) return INVALID_FILE_ATTRIBUTES;
     return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
 }
 
@@ -305,47 +442,62 @@ typedef struct _WIN32_FIND_DATAW {
 
 struct _mwFindHandle {
     DIR*  dir;
-    char  pattern[256];
-    char  dirPath[4096];
+    char* pattern;
+    char* dirPath;
 };
 
 static inline bool _mwFindMatch(struct dirent* de, struct _mwFindHandle* fh,
                                 WIN32_FIND_DATA* ffd)
 {
     if (fnmatch(fh->pattern, de->d_name, FNM_CASEFOLD) != 0) return false;
-    mbstowcs(ffd->cFileName, de->d_name, MAX_PATH);
-    char full[4096 + 256];
-    snprintf(full, sizeof(full), "%s/%s", fh->dirPath, de->d_name);
+    if (!_mwUtf8ToWideBuffer(de->d_name, ffd->cFileName, MAX_PATH)) return false;
+    size_t dirLen = strlen(fh->dirPath);
+    size_t nameLen = strlen(de->d_name);
+    if (dirLen > SIZE_MAX - nameLen - 2) return false;
+    char* full = (char*)malloc(dirLen + nameLen + 2);
+    if (!full) return false;
+    memcpy(full, fh->dirPath, dirLen);
+    full[dirLen] = '/';
+    memcpy(full + dirLen + 1, de->d_name, nameLen + 1);
     struct stat st;
-    ffd->dwFileAttributes = (stat(full, &st) == 0 && S_ISDIR(st.st_mode))
+    int statResult = stat(full, &st);
+    free(full);
+    ffd->dwFileAttributes = (statResult == 0 && S_ISDIR(st.st_mode))
                             ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
     return true;
 }
 
 static inline HANDLE FindFirstFileW(const wchar_t* wpattern, WIN32_FIND_DATA* ffd)
 {
-    char pat[4096]; wcstombs(pat, wpattern, sizeof(pat));
+    char* pat = _mwNormalizeWidePath(wpattern);
+    if (!pat) return INVALID_HANDLE_VALUE;
     char* slash = strrchr(pat, '/');
     if (!slash) slash = strrchr(pat, '\\');
-    char dirPath[4096], filePat[256];
+    char* dirPath;
+    char* filePat;
     if (slash) {
         size_t n = (size_t)(slash - pat);
-        strncpy(dirPath, pat, n); dirPath[n] = '\0';
-        strncpy(filePat, slash + 1, sizeof(filePat) - 1); filePat[sizeof(filePat)-1] = '\0';
+        dirPath = n == 0 ? strdup("/") : (char*)malloc(n + 1);
+        filePat = strdup(slash + 1);
+        if (dirPath && n != 0) { memcpy(dirPath, pat, n); dirPath[n] = '\0'; }
     } else {
-        strcpy(dirPath, "."); strncpy(filePat, pat, sizeof(filePat)-1); filePat[sizeof(filePat)-1]='\0';
+        dirPath = strdup(".");
+        filePat = strdup(pat);
     }
+    free(pat);
+    if (!dirPath || !filePat) { free(dirPath); free(filePat); return INVALID_HANDLE_VALUE; }
     DIR* d = opendir(dirPath);
-    if (!d) return INVALID_HANDLE_VALUE;
+    if (!d) { free(dirPath); free(filePat); return INVALID_HANDLE_VALUE; }
     struct _mwFindHandle* fh = (struct _mwFindHandle*)malloc(sizeof(struct _mwFindHandle));
+    if (!fh) { closedir(d); free(dirPath); free(filePat); return INVALID_HANDLE_VALUE; }
     fh->dir = d;
-    strncpy(fh->pattern, filePat, sizeof(fh->pattern)-1); fh->pattern[sizeof(fh->pattern)-1]='\0';
-    strncpy(fh->dirPath, dirPath, sizeof(fh->dirPath)-1); fh->dirPath[sizeof(fh->dirPath)-1]='\0';
+    fh->pattern = filePat;
+    fh->dirPath = dirPath;
     struct dirent* de;
     while ((de = readdir(d)) != NULL) {
         if (_mwFindMatch(de, fh, ffd)) return (HANDLE)fh;
     }
-    closedir(d); free(fh);
+    closedir(d); free(fh->pattern); free(fh->dirPath); free(fh);
     return INVALID_HANDLE_VALUE;
 }
 
@@ -362,7 +514,10 @@ static inline BOOL FindNextFileW(HANDLE hFind, WIN32_FIND_DATA* ffd)
 static inline BOOL FindClose(HANDLE hFind)
 {
     struct _mwFindHandle* fh = (struct _mwFindHandle*)hFind;
-    closedir(fh->dir); free(fh);
+    closedir(fh->dir);
+    free(fh->pattern);
+    free(fh->dirPath);
+    free(fh);
     return TRUE;
 }
 

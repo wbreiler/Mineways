@@ -237,7 +237,7 @@ private:
         wxArrayString typeChoices;
         for (auto& n : kTypeNames) typeChoices.Add(n);
         m_typeChoice = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, typeChoices);
-        m_typeChoice->SetSelection(m_efd.fileType < FILE_TYPE_TOTAL ? m_efd.fileType : 0);
+        m_typeChoice->SetSelection(m_efd.fileType >= 0 && m_efd.fileType < FILE_TYPE_TOTAL ? m_efd.fileType : 0);
         grid->Add(new wxStaticText(this, wxID_ANY, "File type:"), 0, wxALIGN_CENTER_VERTICAL);
         grid->Add(m_typeChoice, 1, wxEXPAND);
 
@@ -374,13 +374,11 @@ private:
         wxFlexGridSizer* comboGrid = new wxFlexGridSizer(2, 2, 6, 8);
         m_physMaterial = new wxChoice(p, wxID_ANY);
         for (int i = 0; i < MTL_COST_TABLE_SIZE; i++) {
-            char buf[128]; wcstombs(buf, gMtlCostTable[i].wname, sizeof(buf));
-            m_physMaterial->Append(wxString::FromUTF8(buf));
+            m_physMaterial->Append(wxString(gMtlCostTable[i].wname));
         }
         m_units = new wxChoice(p, wxID_ANY);
         for (int i = 0; i < MODELS_UNITS_TABLE_SIZE; i++) {
-            char buf[64]; wcstombs(buf, gUnitTypeTable[i].wname, sizeof(buf));
-            m_units->Append(wxString::FromUTF8(buf));
+            m_units->Append(wxString(gUnitTypeTable[i].wname));
         }
         comboGrid->Add(new wxStaticText(p, wxID_ANY, "Physical material:"), 0, wxALIGN_CENTER_VERTICAL);
         comboGrid->Add(m_physMaterial);
@@ -472,6 +470,10 @@ private:
     void LoadFromEfd()
     {
         int ft = m_efd.fileType;
+        if (ft < 0 || ft >= FILE_TYPE_TOTAL) {
+            ft = FILE_TYPE_WAVEFRONT_ABS_OBJ;
+            m_efd.fileType = ft;
+        }
         m_typeChoice->SetSelection(ft);
 
         m_rot0->SetValue(!!m_efd.radioRotate0);
@@ -506,8 +508,14 @@ private:
         m_modelHeight->SetValue(wxString::Format("%g", m_efd.modelHeightVal > 0 ? m_efd.modelHeightVal : 5.0f));
         m_blockSize->SetValue(wxString::Format("%g", m_efd.blockSizeVal[ft] > 0 ? m_efd.blockSizeVal[ft] : 1.0f));
         m_cost->SetValue(wxString::Format("%0.2f", m_efd.costVal > 0 ? m_efd.costVal : 25.0f));
-        m_physMaterial->SetSelection(m_efd.comboPhysicalMaterial[ft]);
-        m_units->SetSelection(m_efd.comboModelUnits[ft]);
+        int material = m_efd.comboPhysicalMaterial[ft];
+        if (material < 0 || material >= MTL_COST_TABLE_SIZE) material = PRINT_MATERIAL_FULL_COLOR_SANDSTONE;
+        int units = m_efd.comboModelUnits[ft];
+        if (units < 0 || units >= MODELS_UNITS_TABLE_SIZE) units = UNITS_MILLIMETER;
+        m_efd.comboPhysicalMaterial[ft] = material;
+        m_efd.comboModelUnits[ft] = units;
+        m_physMaterial->SetSelection(material);
+        m_units->SetSelection(units);
 
         m_chkFillBubbles->SetValue(!!m_efd.chkFillBubbles);
         m_chkSealEntrances->SetValue(!!m_efd.chkSealEntrances);
@@ -575,8 +583,13 @@ private:
         m_efd.radioExportSolidTexture[ft] = m_matSolidTex->GetValue();
         m_efd.radioExportFullTexture[ft] = m_matFullTex->GetValue();
         m_efd.radioExportTileTextures[ft] = m_matTiles->GetValue();
-        strncpy(m_efd.tileDirString, m_tileDir->GetValue().utf8_str(), MAX_PATH - 1);
-        m_efd.tileDirString[MAX_PATH - 1] = '\0';
+        wxScopedCharBuffer tileDir = m_tileDir->GetValue().utf8_str();
+        if (!tileDir || tileDir.length() >= MAX_PATH) {
+            wxMessageBox(wxString::Format("Tile directory must be at most %d UTF-8 bytes.", MAX_PATH - 1),
+                         "Folder name error", wxOK | wxICON_ERROR, this);
+            return false;
+        }
+        memcpy(m_efd.tileDirString, tileDir.data(), tileDir.length() + 1);
         {
             static const char badchar[] = "<>|?*:/\\";
             for (size_t i = 0; i < sizeof(badchar) - 1; i++) {
@@ -602,6 +615,12 @@ private:
         m_efd.radioScaleByCost = m_scaleCost->GetValue();
         m_efd.comboPhysicalMaterial[ft] = m_physMaterial->GetSelection();
         m_efd.comboModelUnits[ft] = m_units->GetSelection();
+        if (m_efd.comboPhysicalMaterial[ft] < 0 || m_efd.comboPhysicalMaterial[ft] >= MTL_COST_TABLE_SIZE ||
+            m_efd.comboModelUnits[ft] < 0 || m_efd.comboModelUnits[ft] >= MODELS_UNITS_TABLE_SIZE) {
+            wxMessageBox("Choose a valid physical material and model unit.", "Value error",
+                         wxOK | wxICON_ERROR, this);
+            return false;
+        }
 
         if (!parseFloat(m_modelHeight, m_efd.modelHeightVal) ||
             !parseFloat(m_blockSize, m_efd.blockSizeVal[ft]) ||
@@ -701,13 +720,16 @@ int doExportDialog(wxWindow* parent, ExportFileData& efd,
                    int selMinX, int selMinY, int selMinZ,
                    int selMaxX, int selMaxY, int selMaxZ)
 {
-    char initPathBuf[4096] = {};
-    if (outputPath[0]) wcstombs(initPathBuf, outputPath, sizeof(initPathBuf));
-
-    ExportOptionsDialog dlg(parent, efd, wxString::FromUTF8(initPathBuf),
+    ExportOptionsDialog dlg(parent, efd, outputPath[0] ? wxString(outputPath) : wxString(),
                             selMinX, selMinY, selMinZ, selMaxX, selMaxY, selMaxZ);
     if (dlg.ShowModal() != wxID_OK) return wxID_CANCEL;
 
-    mbstowcs(outputPath, dlg.GetPath().utf8_str(), outputPathLen);
+    const wchar_t* convertedPath = dlg.GetPath().wc_str();
+    size_t convertedPathLength = wcslen(convertedPath);
+    if (convertedPathLength >= outputPathLen) {
+        wxMessageBox("The export path is too long.", "Path error", wxOK | wxICON_ERROR, parent);
+        return wxID_CANCEL;
+    }
+    memcpy(outputPath, convertedPath, (convertedPathLength + 1) * sizeof(wchar_t));
     return wxID_OK;
 }

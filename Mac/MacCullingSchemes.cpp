@@ -391,8 +391,12 @@ void doCullingSchemesMac(wxWindow* parent)
     if (dlg.ShowModal() == wxID_OK) {
         int sel = listBox->GetSelection();
         if (sel != wxNOT_FOUND && loadScheme(rowIds[sel], gCurCS)) {
-            applyCullingScheme(gCurCS.culled);
-            mbstowcs(gLastSelected, gCurCS.name, 255);
+            if (_mwUtf8ToWideBuffer(gCurCS.name, gLastSelected, 255)) {
+                applyCullingScheme(gCurCS.culled);
+            } else {
+                applyCullingScheme(nullptr);
+                wcscpy(gLastSelected, L"Standard");
+            }
         } else {
             applyCullingScheme(nullptr);  // Standard
             wcscpy(gLastSelected, L"Standard");

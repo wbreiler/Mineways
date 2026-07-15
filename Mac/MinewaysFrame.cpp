@@ -15,6 +15,10 @@
 // Win32 shims + project headers (stdafx.h routes to compat.h on non-WIN32)
 #include "stdafx.h"
 #include "CullingSchemes.h"   // applyCullingScheme/isBlockCulled declarations
+#include <cmath>
+#include <limits>
+#include <new>
+#include <stdexcept>
 
 // ─── Globals (mirror of Win/Mineways.cpp static globals) ────────────────────
 #define MINZOOM 1.0f
@@ -120,12 +124,21 @@ static bool LoadExportFileData(ExportFileData& e)
         return false;
     if (!cfg.Read("exportFileData", &hex) || hex.length() != sizeof(ExportFileData) * 2)
         return false;
-    unsigned char* bytes = (unsigned char*)&e;
+    ExportFileData loaded = {};
+    unsigned char* bytes = (unsigned char*)&loaded;
     for (size_t i = 0; i < sizeof(ExportFileData); i++) {
         unsigned long v = 0;
         if (!hex.Mid(2 * i, 2).ToULong(&v, 16)) return false;
         bytes[i] = (unsigned char)v;
     }
+    if (loaded.fileType < 0 || loaded.fileType >= FILE_TYPE_TOTAL) return false;
+    for (int i = 0; i < FILE_TYPE_TOTAL; i++) {
+        if (loaded.comboPhysicalMaterial[i] < 0 || loaded.comboPhysicalMaterial[i] >= MTL_COST_TABLE_SIZE ||
+            loaded.comboModelUnits[i] < 0 || loaded.comboModelUnits[i] >= MODELS_UNITS_TABLE_SIZE)
+            return false;
+    }
+    loaded.tileDirString[MAX_PATH - 1] = '\0';
+    e = loaded;
     return true;
 }
 
@@ -354,17 +367,19 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
     if (cfg.Read("savesDir", &cfgSaves))
         savesDir = cfgSaves;
     if (cfg.Read("exportPath", &cfgExportPath))
-        mbstowcs(gExportPath, cfgExportPath.utf8_str(), 4096);
+        _mwUtf8ToWideBuffer(cfgExportPath.utf8_str(), gExportPath, 4096);
     LoadExportFileData(gEfd);   // falls back to the InitViewExportData preset above if absent/stale
     LoadRecentExportsFromConfig();
     gCurX = cfg.ReadDouble("curX", 0.0);
     gCurZ = cfg.ReadDouble("curZ", 0.0);
     gCurScale = cfg.ReadDouble("curScale", 1.0);
-    if (gCurScale < 0.01) gCurScale = 1.0;
+    if (!std::isfinite(gCurScale) || gCurScale < 0.01) gCurScale = 1.0;
 
-    mbstowcs(gSelectTerrainPathAndName, terrainPath.utf8_str(), MAX_PATH_AND_FILE);
+    if (!_mwUtf8ToWideBuffer(terrainPath.utf8_str(), gSelectTerrainPathAndName, MAX_PATH_AND_FILE))
+        gSelectTerrainPathAndName[0] = L'\0';
     splitPath(gSelectTerrainPathAndName, gSelectTerrainDir, nullptr);
-    mbstowcs(gWorldPathDefault, savesDir.utf8_str(), MAX_PATH_AND_FILE);
+    if (!_mwUtf8ToWideBuffer(savesDir.utf8_str(), gWorldPathDefault, MAX_PATH_AND_FILE))
+        gWorldPathDefault[0] = L'\0';
 
     // Initialize block colors
     SetMapPremultipliedColors(0);
@@ -415,15 +430,9 @@ MinewaysFrame::~MinewaysFrame()
 {
     // Persist settings to plist via wxConfig
     wxConfig cfg("Mineways");
-    char buf[4096];
-    wcstombs(buf, gSelectTerrainPathAndName, sizeof(buf));
-    cfg.Write("terrainPath",  wxString::FromUTF8(buf));
-    char savesPath[4096]; wcstombs(savesPath, gWorldPathDefault, sizeof(savesPath));
-    cfg.Write("savesDir",    wxString::FromUTF8(savesPath));
-    if (gExportPath[0]) {
-        wcstombs(buf, gExportPath, sizeof(buf));
-        cfg.Write("exportPath", wxString::FromUTF8(buf));
-    }
+    cfg.Write("terrainPath", wxString(gSelectTerrainPathAndName));
+    cfg.Write("savesDir", wxString(gWorldPathDefault));
+    if (gExportPath[0]) cfg.Write("exportPath", wxString(gExportPath));
     SaveExportFileData(gEfd);
     cfg.Write("curX",     gCurX);
     cfg.Write("curZ",     gCurZ);
@@ -443,9 +452,9 @@ MinewaysFrame::~MinewaysFrame()
 static int ScanWorldSaves(const wxString& savesDir)
 {
     gNumWorlds = 0;
-    char path[4096];
-    strncpy(path, savesDir.utf8_str(), sizeof(path) - 1); path[sizeof(path)-1] = '\0';
-    DIR* d = opendir(path);
+    wxScopedCharBuffer path = savesDir.utf8_str();
+    if (!path) return 0;
+    DIR* d = opendir(path.data());
     if (!d) return 0;
     struct dirent* de;
     while ((de = readdir(d)) != nullptr && gNumWorlds < MAX_WORLDS) {
@@ -455,7 +464,7 @@ static int ScanWorldSaves(const wxString& savesDir)
         if (!wxFileExists(entry + "/level.dat")) continue;
 
         wchar_t wpath[MAX_PATH_AND_FILE], fileOpened[MAX_PATH_AND_FILE];
-        mbstowcs(wpath, entry.utf8_str(), MAX_PATH_AND_FILE);
+        if (!_mwUtf8ToWideBuffer(entry.utf8_str(), wpath, MAX_PATH_AND_FILE)) continue;
         int version = 0;
         if (GetFileVersion(wpath, &version, fileOpened, MAX_PATH_AND_FILE) != 0)
             continue;   // unreadable/unsupported (e.g. Bedrock) — skip like Windows does
@@ -479,9 +488,9 @@ static int ScanWorldSaves(const wxString& savesDir)
 static int ScanTerrainFiles(const wxString& dir)
 {
     gNumTerrainFiles = 0;
-    char path[4096];
-    strncpy(path, dir.utf8_str(), sizeof(path) - 1); path[sizeof(path)-1] = '\0';
-    DIR* d = opendir(path);
+    wxScopedCharBuffer path = dir.utf8_str();
+    if (!path) return 0;
+    DIR* d = opendir(path.data());
     if (!d) return 0;
     struct dirent* de;
     while ((de = readdir(d)) != nullptr && gNumTerrainFiles < MAX_TERRAIN_FILES) {
@@ -502,13 +511,11 @@ static int ScanTerrainFiles(const wxString& dir)
 void MinewaysFrame::BuildMenu()
 {
     // Scan worlds before building menu so world submenu is populated
-    char defPath[4096]; wcstombs(defPath, gWorldPathDefault, sizeof(defPath));
-    ScanWorldSaves(wxString::FromUTF8(defPath));
+    ScanWorldSaves(wxString(gWorldPathDefault));
 
     // Scan for alternate terrainExt*.png files alongside the default one
     {
-        char terrainDirBuf[4096]; wcstombs(terrainDirBuf, gSelectTerrainDir, sizeof(terrainDirBuf));
-        ScanTerrainFiles(wxString::FromUTF8(terrainDirBuf));
+        ScanTerrainFiles(wxString(gSelectTerrainDir));
     }
 
     wxMenuBar* mb = new wxMenuBar;
@@ -680,10 +687,8 @@ void MinewaysFrame::UpdateStatusBar(int mx, int mz, int my,
 void MinewaysFrame::OnOpenWorld(wxCommandEvent&)
 {
     // Manual directory browse, for worlds outside the scanned saves folder
-    char defPath[4096] = "";
-    wcstombs(defPath, gWorldPathDefault, sizeof(defPath));
     wxDirDialog dlg(this, "Select a Minecraft world folder",
-                    wxString::FromUTF8(defPath),
+                    wxString(gWorldPathDefault),
                     wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
     if (dlg.ShowModal() != wxID_OK) return;
     wxString err = LoadWorldFromDir(dlg.GetPath());
@@ -749,10 +754,9 @@ void MinewaysFrame::OnCullingSchemes(wxCommandEvent&)
 
 void MinewaysFrame::OnChooseTerrainFile(wxCommandEvent&)
 {
-    char curPath[MAX_PATH_AND_FILE];
-    wcstombs(curPath, gSelectTerrainPathAndName, sizeof(curPath));
-    wxString defaultDir  = wxFileName(wxString::FromUTF8(curPath)).GetPath();
-    wxString defaultFile = wxFileName(wxString::FromUTF8(curPath)).GetFullName();
+    wxString currentPath(gSelectTerrainPathAndName);
+    wxString defaultDir  = wxFileName(currentPath).GetPath();
+    wxString defaultFile = wxFileName(currentPath).GetFullName();
 
     wxFileDialog dlg(this, "Choose Terrain File", defaultDir, defaultFile,
                      "Terrain files (terrainExt*.png)|terrainExt*.png|PNG files (*.png)|*.png",
@@ -783,7 +787,13 @@ void MinewaysFrame::OnTerrainMenuItem(wxCommandEvent& e)
 // Mac/ImportSettings.cpp's "Terrain file name:" header/script command.
 void MinewaysFrame::SetTerrainFile(const wxString& path)
 {
-    mbstowcs(gSelectTerrainPathAndName, path.utf8_str(), MAX_PATH_AND_FILE);
+    wchar_t terrainPath[MAX_PATH_AND_FILE];
+    if (!_mwUtf8ToWideBuffer(path.utf8_str(), terrainPath, MAX_PATH_AND_FILE)) {
+        wxMessageBox("The terrain file path is invalid or too long.", "Terrain file error",
+                     wxOK | wxICON_ERROR, this);
+        return;
+    }
+    wcscpy(gSelectTerrainPathAndName, terrainPath);
     splitPath(gSelectTerrainPathAndName, gSelectTerrainDir, nullptr);
     RedrawMap();
 }
@@ -818,6 +828,9 @@ void MinewaysFrame::OnOpenFile(wxCommandEvent&)
 wxString MinewaysFrame::LoadSchematic(const wxString& path)
 {
     bool isSponge = path.Lower().EndsWith(".schem");
+    wchar_t schematicPath[MAX_PATH_AND_FILE];
+    if (!_mwUtf8ToWideBuffer(path.utf8_str(), schematicPath, MAX_PATH_AND_FILE))
+        return "The schematic path is invalid or too long.";
 
     CloseAll();
     free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
@@ -826,7 +839,7 @@ wxString MinewaysFrame::LoadSchematic(const wxString& path)
     gWorldGuide.type = WORLD_SCHEMATIC_TYPE;
     gWorldGuide.sch.isSponge = isSponge;
     gWorldGuide.sch.repeat   = (path.Find("repeat") != wxNOT_FOUND);
-    mbstowcs(gWorldGuide.world, path.utf8_str(), MAX_PATH_AND_FILE);
+    wcscpy(gWorldGuide.world, schematicPath);
 
     int err = LoadSchematicFile(gWorldGuide.world, isSponge);
     if (err != 0) {
@@ -868,6 +881,7 @@ static int BuildExportFlags(const ExportFileData& e, wxWindow* parent)
 {
     int flags = e.flags;
     int ft = e.fileType;
+    if (ft < 0 || ft >= FILE_TYPE_TOTAL) ft = FILE_TYPE_WAVEFRONT_ABS_OBJ;
 
     if (e.radioExportMtlColors[ft])
         flags |= EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_OBJ_SEPARATE_TYPES | EXPT_OUTPUT_OBJ_MATERIAL_PER_BLOCK | EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
@@ -996,7 +1010,11 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
     // Exe/bundle directory for texture lookup
     wchar_t curDir[MAX_PATH_AND_FILE];
     wxFileName exeFN(wxStandardPaths::Get().GetExecutablePath());
-    mbstowcs(curDir, exeFN.GetPath().utf8_str(), MAX_PATH_AND_FILE);
+    if (!_mwUtf8ToWideBuffer(exeFN.GetPath().utf8_str(), curDir, MAX_PATH_AND_FILE)) {
+        wxMessageBox("The application resource path is invalid or too long.", "Export failed",
+                     wxOK | wxICON_ERROR, this);
+        return;
+    }
 
     // Biome/group state
     static int userSelectedBiome = -1, biomeIndex = -1;
@@ -1057,15 +1075,11 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
         if (outputFileList.count > 0) {
             for (int i = 0; i < outputFileList.count; i++) {
                 if (outputFileList.name[i]) {
-                    char outPath[MAX_PATH_AND_FILE];
-                    wcstombs(outPath, outputFileList.name[i], sizeof(outPath));
-                    msg += "\n" + wxString::FromUTF8(outPath);
+                    msg += "\n" + wxString(outputFileList.name[i]);
                 }
             }
         } else {
-            char outPath[MAX_PATH_AND_FILE] = {};
-            wcstombs(outPath, outputPath, sizeof(outPath));
-            msg += "\n(expected: " + wxString::FromUTF8(outPath) + ")";
+            msg += "\n(expected: " + wxString(outputPath) + ")";
         }
         wxMessageBox(msg, "Export done", wxOK | wxICON_INFORMATION, this);
 
@@ -1073,20 +1087,14 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
         // Use the first actually-written file so the recorded path has the on-disk suffix
         // SaveVolume adds when the user's typed name is missing one.
         if (outputFileList.count > 0 && outputFileList.name[0]) {
-            char recordedPath[MAX_PATH_AND_FILE];
-            wcstombs(recordedPath, outputFileList.name[0], sizeof(recordedPath));
-            AddToRecentExports(wxString::FromUTF8(recordedPath));
+            AddToRecentExports(wxString(outputFileList.name[0]));
         } else {
-            char recordedPath[MAX_PATH_AND_FILE];
-            wcstombs(recordedPath, outputPath, sizeof(recordedPath));
-            AddToRecentExports(wxString::FromUTF8(recordedPath));
+            AddToRecentExports(wxString(outputPath));
         }
     } else {
         // Show path even on failure so user can diagnose
-        char attemptedPath[MAX_PATH_AND_FILE] = {};
-        wcstombs(attemptedPath, outputPath, sizeof(attemptedPath));
         wxMessageBox(wxString::Format("Export failed (error %d).\nAttempted path: %s",
-                     errCode, attemptedPath),
+                     errCode, wxString(outputPath)),
                      "Export error", wxOK | wxICON_ERROR, this);
     }
 
@@ -1250,8 +1258,7 @@ void MinewaysFrame::OnReloadWorld(wxCommandEvent&)
         wxMessageBox("You need to load a world first.", "No world loaded", wxOK | wxICON_INFORMATION, this);
         return;
     }
-    char buf[4096]; wcstombs(buf, gWorldGuide.world, sizeof(buf));
-    wxString err = LoadWorldFromDir(wxString::FromUTF8(buf));
+    wxString err = LoadWorldFromDir(wxString(gWorldGuide.world));
     if (!err.IsEmpty()) wxMessageBox(err, "Load error", wxOK | wxICON_ERROR, this);
 }
 
@@ -1295,20 +1302,53 @@ void MinewaysFrame::OnExportMap(wxCommandEvent&)
 
     if (minx > maxx) wxSwap(minx, maxx);
     if (minz > maxz) wxSwap(minz, maxz);
-    int w = maxx - minx + 1;
-    int h = maxz - minz + 1;
-    int zoom = (int)(gCurScale + 0.5f);
+    int64_t widthBlocks = (int64_t)maxx - minx + 1;
+    int64_t heightBlocks = (int64_t)maxz - minz + 1;
+    if (widthBlocks <= 0 || heightBlocks <= 0 ||
+        widthBlocks > (std::numeric_limits<int>::max)() || heightBlocks > (std::numeric_limits<int>::max)() ||
+        !std::isfinite(gCurScale) || gCurScale > (std::numeric_limits<int>::max)() - 0.5) {
+        wxMessageBox("The selected map dimensions are too large to export.",
+                     "Export Map failed", wxOK | wxICON_ERROR, this);
+        return;
+    }
+    int w = (int)widthBlocks;
+    int h = (int)heightBlocks;
+    int zoom = (int)(gCurScale + 0.5);
     if (zoom < 1) zoom = 1;
 
+    size_t pixelWidth = (size_t)w * (size_t)zoom;
+    size_t pixelHeight = (size_t)h * (size_t)zoom;
+    constexpr size_t MAX_EXPORT_MAP_BYTES = (size_t)1024 * 1024 * 1024;
+    if (pixelWidth > (size_t)(std::numeric_limits<int>::max)() ||
+        pixelHeight > (size_t)(std::numeric_limits<int>::max)() ||
+        pixelWidth > SIZE_MAX / pixelHeight ||
+        pixelWidth * pixelHeight > MAX_EXPORT_MAP_BYTES / 3) {
+        wxMessageBox("The selected map would require more than 1 GiB of image memory. "
+                     "Reduce the selection size or zoom level.",
+                     "Export Map failed", wxOK | wxICON_ERROR, this);
+        return;
+    }
+    size_t imageBytes = pixelWidth * pixelHeight * 3;
+
     progimage_info mapimage;
-    mapimage.width = zoom * w;
-    mapimage.height = zoom * h;
-    mapimage.image_data.resize((size_t)w * h * 3 * zoom * zoom, 0x0);
+    mapimage.width = (int)pixelWidth;
+    mapimage.height = (int)pixelHeight;
+    try {
+        mapimage.image_data.resize(imageBytes, 0x0);
+    } catch (const std::bad_alloc&) {
+        wxMessageBox("Not enough memory is available to render the selected map.",
+                     "Export Map failed", wxOK | wxICON_ERROR, this);
+        return;
+    } catch (const std::length_error&) {
+        wxMessageBox("The selected map dimensions are too large to export.",
+                     "Export Map failed", wxOK | wxICON_ERROR, this);
+        return;
+    }
 
     // Suppress the selection-rectangle overlay while rendering to the array —
     // it's drawn from the same highlight state the interactive map uses.
     SetHighlightState(0, minx, gTargetDepth, minz, maxx, maxy, maxz, gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_IGNORE);
-    int retCode = DrawMapToArray(&mapimage.image_data[0], &gWorldGuide, minx, minz,
+    int retCode = DrawMapToArray(mapimage.image_data.data(), &gWorldGuide, minx, minz,
                                  maxy - gMinHeight, gMaxHeight, w, h, zoom, &gOptions, gHitsFound,
                                  progressCB, gMinecraftVersion, gVersionID);
     SetHighlightState(gHighlightOn, minx, gTargetDepth, minz, maxx, gCurDepth, maxz,
@@ -1320,8 +1360,14 @@ void MinewaysFrame::OnExportMap(wxCommandEvent&)
         return;
     }
 
+    const wchar_t* convertedPath = path.wc_str();
+    size_t convertedPathLength = wcslen(convertedPath);
+    if (convertedPathLength >= MAX_PATH_AND_FILE) {
+        wxMessageBox("The PNG output path is too long.", "Export Map failed", wxOK | wxICON_ERROR, this);
+        return;
+    }
     wchar_t wpath[MAX_PATH_AND_FILE];
-    mbstowcs(wpath, path.utf8_str(), MAX_PATH_AND_FILE);
+    memcpy(wpath, convertedPath, (convertedPathLength + 1) * sizeof(wchar_t));
     int pngResult = writepng(&mapimage, 3, wpath);
     writepng_cleanup(&mapimage);
 
@@ -1458,13 +1504,11 @@ void MinewaysFrame::OnViewInformation(wxCommandEvent&)
     case WORLD_LEVEL_TYPE: {
         char levelName[MAX_PATH_AND_FILE] = {};
         GetLevelName(gWorldGuide.world, levelName, MAX_PATH_AND_FILE);
-        char worldPath[MAX_PATH_AND_FILE] = {};
-        wcstombs(worldPath, gWorldGuide.world, sizeof(worldPath));
         info = wxString::Format(
             "Level name: %s\nDirectory name: %s\n\n"
             "Major version: 1.%d%s\nData version: %d\n\n"
             "Spawn location: %d, %d, %d\n",
-            levelName, worldPath,
+            levelName, wxString(gWorldGuide.world),
             gMinecraftVersion, (gMinecraftVersion == 8 ? " or earlier" : ""),
             gVersionID, gSpawnX, gSpawnY, gSpawnZ);
         if (gWorldGuide.isServerWorld)
@@ -1606,7 +1650,8 @@ void MinewaysFrame::OnZoomOutFurther(wxCommandEvent&)
 wxString MinewaysFrame::LoadWorldFromDir(const wxString& dir)
 {
     wchar_t wdir[MAX_PATH_AND_FILE];
-    mbstowcs(wdir, dir.utf8_str(), MAX_PATH_AND_FILE);
+    if (!_mwUtf8ToWideBuffer(dir.utf8_str(), wdir, MAX_PATH_AND_FILE))
+        return "The world directory path is invalid or too long.";
 
     // Detect and set the world type
     gWorldGuide.type = WORLD_LEVEL_TYPE;
