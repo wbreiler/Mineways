@@ -3730,7 +3730,11 @@ static int loadSpongeSchematic(wchar_t* pathAndFile)
     gWorldGuide.sch.width = width;
     gWorldGuide.sch.height = height;
     gWorldGuide.sch.length = length;
-    gWorldGuide.sch.numBlocks = width * height * length;
+    if (!nbtGetValidatedSchematicVolume(width, height, length, &gWorldGuide.sch.numBlocks)) {
+        free(blocks);
+        free(data);
+        return 100 + 5;
+    }
     gWorldGuide.sch.blocks = blocks;
     gWorldGuide.sch.data = data;
 
@@ -3770,8 +3774,8 @@ static int loadSchematic(wchar_t* pathAndFile)
     CHECK_READ_SCHEMATIC_QUIT(GetSchematicWord(pathAndFile, "Height", &gWorldGuide.sch.height), 100 + 2);
     CHECK_READ_SCHEMATIC_QUIT(GetSchematicWord(pathAndFile, "Length", &gWorldGuide.sch.length), 100 + 3);
 
-    gWorldGuide.sch.numBlocks = gWorldGuide.sch.width * gWorldGuide.sch.height * gWorldGuide.sch.length;
-    if (gWorldGuide.sch.numBlocks <= 0)
+    if (!nbtGetValidatedSchematicVolume(gWorldGuide.sch.width, gWorldGuide.sch.height,
+        gWorldGuide.sch.length, &gWorldGuide.sch.numBlocks))
         return 100 + 4;
 
     gWorldGuide.sch.blocks = (unsigned char*)malloc(gWorldGuide.sch.numBlocks);
@@ -7126,6 +7130,10 @@ static int interpretImportLine(char* line, ImportedSet& is)
             saveErrorMessage(is, L"no world given.");
             return INTERPRETER_FOUND_ERROR;
         }
+        if (strlen(strPtr) >= MAX_PATH_AND_FILE) {
+            saveErrorMessage(is, L"world path is too long.");
+            return INTERPRETER_FOUND_ERROR;
+        }
         if (is.processData) {
             // model or scripting - save path
             strcpy_s(is.world, MAX_PATH_AND_FILE, strPtr);
@@ -7269,6 +7277,10 @@ static int interpretImportLine(char* line, ImportedSet& is)
             saveErrorMessage(is, L"no terrain file given.");
             return INTERPRETER_FOUND_ERROR;
         }
+        if (strlen(strPtr) >= MAX_PATH_AND_FILE) {
+            saveErrorMessage(is, L"terrain file path is too long.");
+            return INTERPRETER_FOUND_ERROR;
+        }
         if (is.processData) {
             // TODO - somehow, this message never gets replaced when reloading world. sendStatusMessage(is.ws.hwndStatus, L"Importing model: reading terrain file");
             strcpy_s(is.terrainFile, MAX_PATH_AND_FILE, strPtr);
@@ -7358,6 +7370,10 @@ static int interpretImportLine(char* line, ImportedSet& is)
     if (strPtr != NULL) {
         if (*strPtr == (char)0) {
             saveErrorMessage(is, L"no culling scheme given.");
+            return INTERPRETER_FOUND_ERROR;
+        }
+        if (strlen(strPtr) >= MAX_PATH_AND_FILE) {
+            saveErrorMessage(is, L"culling scheme name is too long.");
             return INTERPRETER_FOUND_ERROR;
         }
         if (is.processData) {
@@ -7552,6 +7568,18 @@ static int interpretImportLine(char* line, ImportedSet& is)
             saveErrorMessage(is, L"could not interpret file type (solid color, textured, etc.).", strPtr);
             return INTERPRETER_FOUND_ERROR;
         }
+        char* tileDirectory = NULL;
+        if (outputTypeCorrespondence[i] == 4) {
+            tileDirectory = findLineDataNoCase(line, "File type: Export individual textures to directory ");
+            if (tileDirectory == NULL)
+                tileDirectory = findLineDataNoCase(line, "File type: Export separate textures to directory ");
+            if (tileDirectory == NULL)
+                tileDirectory = findLineDataNoCase(line, "File type: Export tiles for textures to directory ");
+            if (tileDirectory != NULL && strlen(tileDirectory) >= MAX_PATH) {
+                saveErrorMessage(is, L"individual texture directory path is too long.");
+                return INTERPRETER_FOUND_ERROR;
+            }
+        }
         if (is.processData) {
             is.pEFD->radioExportNoMaterials[is.pEFD->fileType] = 0;
             is.pEFD->radioExportMtlColors[is.pEFD->fileType] = 0;
@@ -7574,27 +7602,8 @@ static int interpretImportLine(char* line, ImportedSet& is)
                 break;
             case 4:
                 is.pEFD->radioExportTileTextures[is.pEFD->fileType] = 1;
-                // and retrieve path
-                {
-                    strPtr = findLineDataNoCase(line, "File type: Export individual textures to directory ");
-                    if (strPtr != NULL) {
-                        strcpy_s(is.pEFD->tileDirString, MAX_PATH, strPtr);
-                    }
-                    else {
-                        // old format
-                        strPtr = findLineDataNoCase(line, "File type: Export separate textures to directory ");
-                        if (strPtr != NULL) {
-                            strcpy_s(is.pEFD->tileDirString, MAX_PATH, strPtr);
-                        }
-                        else {
-                            // old format
-                            strPtr = findLineDataNoCase(line, "File type: Export tiles for textures to directory ");
-                            if (strPtr != NULL) {
-                                strcpy_s(is.pEFD->tileDirString, MAX_PATH, strPtr);
-                            }
-                        }
-                    }
-                }
+                if (tileDirectory != NULL)
+                    strcpy_s(is.pEFD->tileDirString, MAX_PATH, tileDirectory);
                 break;
             default:
                 assert(0);
@@ -8334,6 +8343,10 @@ static int interpretScriptLine(char* line, ImportedSet& is)
 
     strPtr = findLineDataNoCase(line, "Sketchfab token: ");
     if (strPtr != NULL) {
+        if (!isSketchfabFieldSizeValid(strPtr, SKFB_TOKEN_LIMIT)) {
+            saveErrorMessage(is, L"Sketchfab api token is too long (max 32 char.)");
+            return INTERPRETER_FOUND_ERROR;
+        }
         strcpy_s(gSkfbPData.skfbApiToken, SKFB_TOKEN_LIMIT + 1, strPtr);
         return INTERPRETER_FOUND_VALID_LINE;
     }
@@ -8721,6 +8734,10 @@ JumpToSpawn:
     if (strPtr != NULL) {
         if (*strPtr == (char)0) {
             saveErrorMessage(is, L"no log file given.");
+            return INTERPRETER_FOUND_ERROR;
+        }
+        if (strlen(strPtr) >= MAX_PATH_AND_FILE) {
+            saveErrorMessage(is, L"log file path is too long.");
             return INTERPRETER_FOUND_ERROR;
         }
         if (is.logging && !is.processData) {

@@ -187,15 +187,18 @@ static int LoadSchematicFile(const wchar_t* pathAndFile, bool isSponge)
         int rv = GetSpongeSchematic(pathAndFile, &w, &h, &l, &blocks, &data);
         if (rv != 1) { free(blocks); free(data); return 100 + (rv == -1 ? 1 : 5); }
         gWorldGuide.sch.width  = w; gWorldGuide.sch.height = h; gWorldGuide.sch.length = l;
-        gWorldGuide.sch.numBlocks = w * h * l;
+        if (!nbtGetValidatedSchematicVolume(w, h, l, &gWorldGuide.sch.numBlocks)) {
+            free(blocks); free(data);
+            return 105;
+        }
         gWorldGuide.sch.blocks = blocks; gWorldGuide.sch.data = data;
         gVersionID = 2586;
     } else {
         if (GetSchematicWord(pathAndFile, "Width",  &gWorldGuide.sch.width)  != 1) return 101;
         if (GetSchematicWord(pathAndFile, "Height", &gWorldGuide.sch.height) != 1) return 102;
         if (GetSchematicWord(pathAndFile, "Length", &gWorldGuide.sch.length) != 1) return 103;
-        gWorldGuide.sch.numBlocks = gWorldGuide.sch.width * gWorldGuide.sch.height * gWorldGuide.sch.length;
-        if (gWorldGuide.sch.numBlocks <= 0) return 104;
+        if (!nbtGetValidatedSchematicVolume(gWorldGuide.sch.width, gWorldGuide.sch.height,
+                                            gWorldGuide.sch.length, &gWorldGuide.sch.numBlocks)) return 104;
         gWorldGuide.sch.blocks = (unsigned char*)malloc(gWorldGuide.sch.numBlocks);
         gWorldGuide.sch.data   = (unsigned char*)malloc(gWorldGuide.sch.numBlocks);
         if (!gWorldGuide.sch.blocks || !gWorldGuide.sch.data) {
@@ -1001,18 +1004,17 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
 
     // Quick I/O probe: can we create a file in the chosen directory at all?
     {
-        char probePath[MAX_PATH_AND_FILE];
-        wcstombs(probePath, outputPath, sizeof(probePath));
-        FILE* probe = fopen(probePath, "wb");
-        if (!probe) {
+        wxFileName outputFileName(outputPath);
+        wxString probePrefix = outputFileName.GetPathWithSep() + ".mineways-write-test-";
+        wxString probePath = wxFileName::CreateTempFileName(probePrefix);
+        if (probePath.empty()) {
             wxMessageBox(wxString::Format(
-                "Cannot create file — check the path and permissions.\nPath: %s\nerrno: %d (%s)",
-                probePath, errno, strerror(errno)),
+                "Cannot create a file in the export directory — check the path and permissions.\nDirectory: %s",
+                outputFileName.GetPath()),
                 "Export pre-check failed", wxOK | wxICON_ERROR, this);
             return;
         }
-        fclose(probe);
-        remove(probePath);  // clean up test file
+        wxRemoveFile(probePath);
     }
 
     FileList outputFileList;

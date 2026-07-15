@@ -366,25 +366,33 @@ void block_realloc(WorldBlock* block)
         if (block->heightAlloc > block->maxFilledHeight + 1) {
             // we can make it smaller
             int heightAlloc = block->maxFilledHeight + 1;
+            if (heightAlloc <= 0 || block->grid == NULL || block->data == NULL || block->light == NULL)
+                return;
 
-            unsigned char* grid = (unsigned char*)realloc(block->grid, 256 * heightAlloc);
-            if (grid == NULL)
+            size_t gridSize = 256 * (size_t)heightAlloc;
+            size_t lightSize = 128 * (size_t)heightAlloc;
+            unsigned char* grid = (unsigned char*)malloc(gridSize);
+            unsigned char* data = (unsigned char*)malloc(gridSize);
+            unsigned char* light = (unsigned char*)malloc(lightSize);
+            if (grid == NULL || data == NULL || light == NULL) {
+                free(grid);
+                free(data);
+                free(light);
                 return;  // allocation failed, keep existing block unchanged
+            }
+
+            memcpy(grid, block->grid, gridSize);
+            memcpy(data, block->data, gridSize);
+            memcpy(light, block->light, lightSize);
+            free(block->grid);
+            free(block->data);
+            free(block->light);
             block->grid = grid;
-
-            unsigned char* data = (unsigned char*)realloc(block->data, 256 * heightAlloc);
-            if (data == NULL)
-                return;
             block->data = data;
-
-            unsigned char* light = (unsigned char*)realloc(block->light, 128 * heightAlloc);
-            if (light == NULL)
-                return;
             block->light = light;
 
             block->heightAlloc = heightAlloc;
         }
     }
 }
-
 

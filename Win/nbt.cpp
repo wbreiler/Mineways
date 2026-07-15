@@ -29,6 +29,7 @@ THE POSSIBILITY OF SUCH DAMAGE.
 #include "stdafx.h"
 #include <string.h>
 #include <assert.h>
+#include <limits.h>
 
 // We know we won't run into names longer than 100 characters. The old code was
 // safe, but was also allocating strings all the time - seems slow.
@@ -1855,14 +1856,14 @@ void makeHashTable()
 
 int findIndexFromName(char* name)
 {
+    if (name == NULL || strlen(name) < 11 || strncmp(name, "minecraft:", 10) != 0) {
+        // name is too short or uses a namespace Mineways does not recognize
+        return -1;
+    }
     // quick out: if it's air, just be done
     // +10 is to avoid (useless) "minecraft:" string.
     if (strcmp("air", name + 10) == 0) {
         return 0;
-    }
-    if (strlen(name) < 11) {
-        // name is too short, probably some mod name like "train:turn" etc.
-        return -1;
     }
     name += 10;
     // to break on a specific named block
@@ -2422,6 +2423,8 @@ int nbtGetBlocks(bfFile* pbf, unsigned char* buff, unsigned char* data, unsigned
     len = readDword(pbf); //array length
     if (formatClass == FORMAT_UP_THROUGH_1_12) {
         // old, 1.12 or earlier direct format - done
+        if (len != 16 * 16)
+            return LINE_ERROR;
         if (bfread(pbf, biome, len) < 0)
             return LINE_ERROR;
     }
@@ -3099,14 +3102,24 @@ SectionsCode:
             // 1234512345123451234512345123451234512345123451234512345123451234 | 512345 - at the 64 - bit mark the bits just continue
             // New format (which we call "uncompressed"):
             // 123451234512345123451234512345123451234512345123451234512345.... | 1234512345 - at the 60 - bit mark the 5 bits won't fit, so they start again.
+            if ((bigbufflen == 0 && paletteLength > 1) || (bigbufflen > 0 && paletteLength <= 0))
+                return LINE_ERROR;
             if (bigbufflen > 0 && paletteLength > 0) {
+                int bitlength = 4;
+                while ((1 << bitlength) < paletteLength)
+                    bitlength++;
+                const int packedLongCount = 64 * bitlength;
+                const int valuesPerLong = 64 / bitlength;
+                const int paddedLongCount = (16 * 16 * 16 + valuesPerLong - 1) / valuesPerLong;
+                if (bigbufflen != packedLongCount && bigbufflen != paddedLongCount)
+                    return LINE_ERROR;
+
                 // future proof: don't store data if the memory doesn't exist
                 if (y < maxHeight16 && y >= minHeight16) {
-                    // compute number of bits for each palette entry. For example, 21 entries is 5 bits, which can access 17-32 entries.
-                    int bitlength = bigbufflen / 64;
                     // is this the new 1.16 20w17a format?
-                    bool uncompressed = (bigbufflen > 64 * bitlength);
-                    unsigned long int bitmask = (1 << bitlength) - 1;
+                    bool uncompressed = (bigbufflen == paddedLongCount && paddedLongCount != packedLongCount);
+                    unsigned long int bitmask = (1UL << bitlength) - 1;
+                    const int bigbuffByteLength = bigbufflen * 8;
 
                     unsigned char* bout = buff + 16 * 16 * 16 * (int)(y - minHeight16);
                     unsigned char* dout = data + 16 * 16 * 16 * (int)(y - minHeight16);
@@ -3127,6 +3140,8 @@ SectionsCode:
                         // Have to count from top to bottom 8 bytes of each long long. I suspect if I read the long longs as bytes the order might be right.
                         // But, this works.
                         bbindex = (bbindex & 0xfff8) + 7 - (bbindex & 0x7);
+                        if (bbindex < 0 || bbindex >= bigbuffByteLength)
+                            return LINE_ERROR;
                         int bbshift = bitpull & 0x7;
                         // get the top bits out of the topmost byte, on down the row
                         int bits = (bigbuff[bbindex] >> bbshift) & bitmask;
@@ -3136,6 +3151,8 @@ SectionsCode:
                         while (remainingBitLength > 0) {
                             if (bbindex & 0x7) {
                                 // one of the middle bytes, not the bottommost one
+                                if (bbindex < 1)
+                                    return LINE_ERROR;
                                 bits |= (bigbuff[bbindex - 1] << (8 - bbshift)) & bitmask;
                             }
                             else {
@@ -3151,6 +3168,8 @@ SectionsCode:
                                     //next iteration it will be: bbshift = 0;
                                 }
                                 else {
+                                    if (bbindex + 15 >= bigbuffByteLength)
+                                        return LINE_ERROR;
                                     bits |= (bigbuff[bbindex + 15] << (8 - bbshift)) & bitmask;
                                 }
                             }
@@ -3165,12 +3184,7 @@ SectionsCode:
                         if (bits >= paletteLength) {
                             // Should never reach here; means that a stored index value is greater than any value in the palette.
                             assert(0);
-#ifdef _DEBUG
-                            // maximum value is entryIndex - 1; which is useful for debugging - see things go bad
-                            bits = paletteLength - 1;
-#else
-                            bits = 0; // which is likely air
-#endif
+                            return LINE_ERROR;
                         }
                         *bout++ = paletteBlockEntry[bits];
                         *dout++ = paletteDataEntry[bits];
@@ -3438,10 +3452,11 @@ SectionsCode:
 
 static int readBlockData(bfFile* pbf, int& bigbufflen, unsigned char *bigbuff)
 {
-    bigbufflen = readDword(pbf); //array length
+    unsigned int longCount = readDword(pbf); //array length
     // read 8 byte records (longs), so total bytes is bigbufflen * 8
-    if (bigbufflen * 8 > MAX_BLOCK_STATES_ARRAY)
+    if (longCount > MAX_BLOCK_STATES_ARRAY / 8)
         return LINE_ERROR;	// TODO make better unique return codes, with names
+    bigbufflen = (int)longCount;
     // note len is adjusted here from longs (which are 8 bytes long) to the number of bytes to read.
     if (bfread(pbf, bigbuff, bigbufflen * 8) < 0)
         return LINE_ERROR;
@@ -3478,11 +3493,13 @@ static int readBiomePalette(bfFile* pbf, unsigned char* paletteBiomeEntry, int& 
     // go through entries in Palette
     while (nentries--) {
         len = readWord(pbf);
-        if (len <= 1 || len >= MAX_NAME_LENGTH)
+        if (len <= 10 || len >= MAX_NAME_LENGTH)
             return LINE_ERROR;  // really, should not reach here if the data's OK
         if (bfread(pbf, thisBiomeName, len) < 0)
             return LINE_ERROR;
         thisBiomeName[len] = 0;
+        if (strncmp(thisBiomeName, "minecraft:", 10) != 0)
+            return LINE_ERROR;
         // convert biome name to the proper index
         // The +10 goes past the "minecraft:" part of the name in the palette
         int index = findIndexFromBiomeName(thisBiomeName+10);
@@ -3685,6 +3702,8 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
                         char token[100];
                         char value[100];
                         len = readWord(pbf);
+                        if (len >= (int)sizeof(token))
+                            return LINE_ERROR;
                         if (bfread(pbf, token, len) < 0)
                             return LINE_ERROR;
                         token[len] = 0;
@@ -3698,6 +3717,8 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
                         }
 
                         len = readWord(pbf);
+                        if (len >= (int)sizeof(value))
+                            return LINE_ERROR;
                         if (bfread(pbf, value, len) < 0)
                             return LINE_ERROR;
                         value[len] = 0;
@@ -5643,8 +5664,21 @@ int nbtGetSchematicWord(bfFile* pbf, char* field, int* value)
         return LINE_ERROR; //skip name ()
     if (nbtFindElement(pbf, field) != 2)
         return LINE_ERROR;
-    *value = readWord(pbf);
+    *value = (short)readWord(pbf);
     return 1;
+}
+
+bool nbtGetValidatedSchematicVolume(int width, int height, int length, int* numBlocks)
+{
+    if (numBlocks == NULL || width <= 0 || height <= 0 || length <= 0)
+        return false;
+    if (width > INT_MAX / height)
+        return false;
+    int widthHeight = width * height;
+    if (widthHeight > INT_MAX / length)
+        return false;
+    *numBlocks = widthHeight * length;
+    return true;
 }
 
 // return 1 on success
@@ -6822,15 +6856,15 @@ int nbtGetSpongeSchematic(bfFile* pbf,
         tname[nameLen] = '\0';
 
         if (strcmp(tname, "Width") == 0 && type == 0x02) {
-            width = (int)readWord(pbf);
+            width = (short)readWord(pbf);
             haveWidth = true;
         }
         else if (strcmp(tname, "Height") == 0 && type == 0x02) {
-            height = (int)readWord(pbf);
+            height = (short)readWord(pbf);
             haveHeight = true;
         }
         else if (strcmp(tname, "Length") == 0 && type == 0x02) {
-            length = (int)readWord(pbf);
+            length = (short)readWord(pbf);
             haveLength = true;
         }
         else if (strcmp(tname, "Blocks") == 0 && type == 0x0A) {
@@ -6870,8 +6904,8 @@ int nbtGetSpongeSchematic(bfFile* pbf,
     if (!haveWidth || !haveHeight || !haveLength || !sawBlocks) SPONGE_FAIL();
     if (dataBytes == NULL || palCount == 0) SPONGE_FAIL();
 
-    int numBlocks = width * height * length;
-    if (numBlocks <= 0) SPONGE_FAIL();
+    int numBlocks = 0;
+    if (!nbtGetValidatedSchematicVolume(width, height, length, &numBlocks)) SPONGE_FAIL();
 
     *outBlocks = (unsigned char*)malloc((size_t)numBlocks);
     *outData = (unsigned char*)malloc((size_t)numBlocks);

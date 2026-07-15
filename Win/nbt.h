@@ -125,6 +125,7 @@ int nbtGetDimensionDirect(bfFile* pbf, int* dimension);
 //void nbtGetRandomSeed(bfFile *pbf,long long *seed);
 int nbtGetSchematicWord(bfFile* pbf, char* field, int* value);
 int nbtGetSchematicBlocksAndData(bfFile* pbf, int numBlocks, unsigned char* schematicBlocks, unsigned char* schematicBlockData);
+bool nbtGetValidatedSchematicVolume(int width, int height, int length, int* numBlocks);
 
 // Read a Sponge Schematic v3 (.schem) file. Returns 1 on success, 0 on parse failure.
 // On success, *outBlocks and *outData are malloc'd with `(*outWidth) * (*outHeight) * (*outLength)`
