@@ -380,6 +380,11 @@ to a GitHub Release.
   `Win/stdafx.h`'s `MINEWAYS_MAJOR/MINOR_VERSION` — the two can drift
   since Mac releases are cut independently. Check with the user before
   bumping one to match the other.
+- A release tag represents the final cumulative commit for that release; its
+  ancestors are included automatically. After committing all changes intended
+  for a named release, create the tag at that final commit or move an existing
+  local tag forward to it. Do not push or force-update a remote tag unless the
+  user explicitly requests that remote operation.
 
 ### Remotes and PR workflow
 
