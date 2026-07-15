@@ -35,6 +35,7 @@ THE POSSIBILITY OF SUCH DAMAGE.
 #include "vector.h"
 #include "mdlFiles.h"
 #include <assert.h>
+#include <limits.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
@@ -611,7 +612,7 @@ static int modifyAndWriteTextures(int needDifferentTextures, int fileType);
 static void convertWcharPathUnderlined(char* worldNameUnderlined, wchar_t* worldName, bool convertPunctuation);
 static void convertCharPathUnderlined(char* worldNameUnderlined, char* worldCharName, bool convertPunctuation);
 
-static void initializeWorldData(IBox* worldBox, int xmin, int ymin, int zmin, int xmax, int ymax, int zmax);
+static int initializeWorldData(IBox* worldBox, int xmin, int ymin, int zmin, int xmax, int ymax, int zmax);
 static int initializeModelData();
 
 static int readTerrainPNG(const wchar_t* curDir, progimage_info* pII, wchar_t* terrainFileName, int category, int exportFileType);
@@ -952,6 +953,7 @@ int SaveVolume(wchar_t* saveFileName, int fileType, Options* options, WorldGuide
     int retCode = MW_NO_ERROR;
     int needDifferentTextures = 0;
     int catIndex;
+    bool startProgress = true;
     gTotalInputTextures = 1;
     gUserSelectedBiome = userSelectedBiome;
 
@@ -978,6 +980,12 @@ int SaveVolume(wchar_t* saveFileName, int fileType, Options* options, WorldGuide
     gModel.options = options;
     gModel.options->totalBlocks = 0;
     gModel.options->cost = 0.0f;
+    gBoxData = NULL;
+    gBiomeArray = NULL;
+
+    retCode |= initializeWorldData(&worldBox, xmin, ymin, zmin, xmax, ymax, zmax);
+    if (retCode >= MW_BEGIN_ERRORS)
+        goto Exit;
 
     gModel.exportTexture = (gModel.options->exportFlags & EXPT_OUTPUT_TEXTURE) ? 1 : 0;
     gModel.exportTiles = (gModel.options->exportFlags & EXPT_OUTPUT_SEPARATE_TEXTURE_TILES) ? 1 : 0;    // aka "individual"
@@ -1040,9 +1048,6 @@ int SaveVolume(wchar_t* saveFileName, int fileType, Options* options, WorldGuide
     // already initialized above by memset to 0: gModel.groupCount = 0;
     gModel.groupCountSize = groupCountSize;
     gModel.groupCountArray = groupCountArray;
-
-    gBoxData = NULL;
-    gBiomeArray = NULL;
 
     gMinorBlockCount = 0;
 
@@ -1109,8 +1114,6 @@ int SaveVolume(wchar_t* saveFileName, int fileType, Options* options, WorldGuide
     myseedrand(12345);
 
     gOutputFileList = outputFileList;
-
-    bool startProgress = true;
 
     // first things very first: if full texturing is wanted, check if the TerrainExt.png input texture is readable
     if (gModel.options->exportFlags & EXPT_OUTPUT_TEXTURE_IMAGES_OR_TILES)
@@ -1220,7 +1223,7 @@ int SaveVolume(wchar_t* saveFileName, int fileType, Options* options, WorldGuide
 
             if (catIndex == CATEGORY_RGBA) {
                 // compute progress increments, now that we know the input texture size
-                determineProgressValues(fileType, xmax - xmin, zmax - zmin);
+                determineProgressValues(fileType, gBoxSize[X] - 3, gBoxSize[Z] - 3);
                 startProgress = false;
             }
             UPDATE_PROGRESS(gProgress.start.readTextures + (float)(catIndex+1) * (float)gProgress.absolute.readTextures / (float)gTotalInputTextures);
@@ -1228,13 +1231,12 @@ int SaveVolume(wchar_t* saveFileName, int fileType, Options* options, WorldGuide
     }
     if (startProgress) {
         // compute progress increments
-        determineProgressValues(fileType, xmax - xmin, zmax - zmin);
+        determineProgressValues(fileType, gBoxSize[X] - 3, gBoxSize[Z] - 3);
     }
 
     UPDATE_STATUS(gProgress.start.readBlocks, L"Read selected blocks");
     //UPDATE_PROGRESS(gProgress.start.readBlocks);
 
-    initializeWorldData(&worldBox, xmin, ymin, zmin, xmax, ymax, zmax);
     tightenedWorldBox = worldBox;
 
     // Note that tightenedWorldBox will come back with the "solid" bounds, of where data was actually found.
@@ -2138,7 +2140,7 @@ static void convertCharPathUnderlined(char* worldNameUnderlined, char* worldChar
     }
 }
 
-static void initializeWorldData(IBox* worldBox, int xmin, int ymin, int zmin, int xmax, int ymax, int zmax)
+static int initializeWorldData(IBox* worldBox, int xmin, int ymin, int zmin, int xmax, int ymax, int zmax)
 {
     // clean up a bit: make sure max>=min, and limit Y
     ymin = clamp(ymin, gMinHeight, gMaxHeight);
@@ -2150,13 +2152,31 @@ static void initializeWorldData(IBox* worldBox, int xmin, int ymin, int zmin, in
     if (zmin > zmax) swapint(zmin, zmax);
 
     // add an air border of 1 block around the whole box
-    gBoxSize[X] = xmax - xmin + 3;
-    gBoxSize[Y] = ymax - ymin + 3;
-    gBoxSize[Z] = zmax - zmin + 3;
+    long long sizeX = (long long)xmax - (long long)xmin + 3;
+    long long sizeY = (long long)ymax - (long long)ymin + 3;
+    long long sizeZ = (long long)zmax - (long long)zmin + 3;
+    long long offsetX = 1LL - (long long)xmin;
+    long long offsetY = 1LL - (long long)ymin;
+    long long offsetZ = 1LL - (long long)zmin;
+    if (sizeX <= 0 || sizeX > INT_MAX || sizeY <= 0 || sizeY > INT_MAX ||
+        sizeZ <= 0 || sizeZ > INT_MAX || offsetX < INT_MIN || offsetX > INT_MAX ||
+        offsetY < INT_MIN || offsetY > INT_MAX || offsetZ < INT_MIN || offsetZ > INT_MAX) {
+        return MW_WORLD_EXPORT_TOO_LARGE;
+    }
+    long long sizeYZ = sizeY * sizeZ;
+    long long sizeXZ = sizeX * sizeZ;
+    long long maxCells = INT_MAX / (int)sizeof(BoxCell);
+    if (sizeYZ > INT_MAX || sizeXZ > INT_MAX / 6 || sizeX > maxCells / sizeYZ) {
+        return MW_WORLD_EXPORT_TOO_LARGE;
+    }
+    long long sizeXYZ = sizeX * sizeYZ;
+    gBoxSize[X] = (int)sizeX;
+    gBoxSize[Y] = (int)sizeY;
+    gBoxSize[Z] = (int)sizeZ;
     // scale for X index value
-    gBoxSizeYZ = gBoxSize[Y] * gBoxSize[Z];
+    gBoxSizeYZ = (int)sizeYZ;
     // this will be the size of gBoxData
-    gBoxSizeXYZ = gBoxSize[X] * gBoxSizeYZ;
+    gBoxSizeXYZ = (int)sizeXYZ;
 
     gFaceOffset[DIRECTION_BLOCK_SIDE_LO_X] = -gBoxSizeYZ;	// -X
     gFaceOffset[DIRECTION_BLOCK_BOTTOM] = -1;			// -Y
@@ -2176,12 +2196,13 @@ static void initializeWorldData(IBox* worldBox, int xmin, int ymin, int zmin, in
 
     // what to add to a world coordinate to get a box coordinate;
     // the -1 is the "air" border of one block
-    gWorld2BoxOffset[X] = 1 - xmin;
-    gWorld2BoxOffset[Y] = 1 - ymin;
-    gWorld2BoxOffset[Z] = 1 - zmin;
+    gWorld2BoxOffset[X] = (int)offsetX;
+    gWorld2BoxOffset[Y] = (int)offsetY;
+    gWorld2BoxOffset[Z] = (int)offsetZ;
 
     Vec3Scalar(worldBox->min, =, xmin, ymin, zmin);
     Vec3Scalar(worldBox->max, =, xmax, ymax, zmax);
+    return MW_NO_ERROR;
 }
 
 static int initializeModelData()
@@ -2213,6 +2234,10 @@ static int initializeModelData()
     }
 
     gModel.faceRecordPool = (FaceRecordPool*)malloc(sizeof(FaceRecordPool));
+    if (gModel.faceRecordPool == NULL)
+    {
+        return MW_WORLD_EXPORT_TOO_LARGE;
+    }
     gModel.faceRecordPool->count = 0;
     gModel.faceRecordPool->pPrev = NULL;
     // note simplify pool is not allocated, since it's not always used. Allocated on demand
@@ -2515,7 +2540,9 @@ static int populateBox(WorldGuide* pWorldGuide, ChangeBlockCommand* pCBC, IBox* 
     }
 
     // have to reinitialize to get right globals for gSolidWorldBox.
-    initializeWorldData(worldBox, gSolidWorldBox.min[X], gSolidWorldBox.min[Y], gSolidWorldBox.min[Z], gSolidWorldBox.max[X], gSolidWorldBox.max[Y], gSolidWorldBox.max[Z]);
+    int initializeRetCode = initializeWorldData(worldBox, gSolidWorldBox.min[X], gSolidWorldBox.min[Y], gSolidWorldBox.min[Z], gSolidWorldBox.max[X], gSolidWorldBox.max[Y], gSolidWorldBox.max[Z]);
+    if (initializeRetCode != MW_NO_ERROR)
+        return initializeRetCode;
 
     gBoxData = (BoxCell*)calloc(gBoxSizeXYZ, sizeof(BoxCell));
     if (gBoxData == NULL)
@@ -12963,6 +12990,8 @@ static void setDefaultUVs(Point2 uvs[3], int skip)
 
 static FaceRecord* allocFaceRecordFromPool()
 {
+    if (gModel.faceRecordPool == NULL)
+        return NULL;
     if (gModel.faceRecordPool->count >= FACE_RECORD_POOL_SIZE)
     {
         // allocate new pool
@@ -12973,8 +13002,7 @@ static FaceRecord* allocFaceRecordFromPool()
             gModel.faceRecordPool = pFRP;
         }
         else {
-            // out of memory! Not sure what to do...
-            assert(pFRP);
+            return NULL;
         }
     }
     return &(gModel.faceRecordPool->fr[gModel.faceRecordPool->count++]);
@@ -12990,6 +13018,8 @@ static void freeFaceRecordToPool(FaceRecord* face)
 
 static SimplifyFaceRecord* allocSimplifyFaceRecordFromPool()
 {
+    if (gModel.simplifyFaceRecordPool == NULL)
+        return NULL;
     if (gModel.simplifyFaceRecordPool->count >= SIMPLIFY_FACE_RECORD_POOL_SIZE)
     {
         SimplifyFaceRecordPool* pSFRP = gModel.simplifyFaceRecordPool->pNext;
@@ -13004,8 +13034,7 @@ static SimplifyFaceRecord* allocSimplifyFaceRecordFromPool()
                 gModel.simplifyFaceRecordPool = pSFRP;
             }
             else {
-                // out of memory! Not sure what to do...
-                assert(pSFRP);
+                return NULL;
             }
         }
         else {
@@ -19581,6 +19610,8 @@ static int saveFaceLoop(int boxIndex, int faceDirection, float heights[4], int h
     int retCode = MW_NO_ERROR;
 
     face = allocFaceRecordFromPool();
+    if (face == NULL)
+        return retCode | MW_WORLD_EXPORT_TOO_LARGE;
 
     // if we sort, we want to keep faces in the order generated, which is
     // generally cache-coherent (and also just easier to view in the file)
@@ -32922,8 +32953,8 @@ static int writeSchematicBox()
     int retCode = MW_NO_ERROR;
 
     int width, height, length, totalSize, maxShortSize;
-    unsigned char* blocks, * block_ptr;
-    unsigned char* blockData, * blockData_ptr;
+    unsigned char* blocks = NULL, * block_ptr = NULL;
+    unsigned char* blockData = NULL, * blockData_ptr = NULL;
     IPoint loc;
     float progressStart, progressOffset;
 
@@ -32937,7 +32968,7 @@ static int writeSchematicBox()
     length = gSolidBox.max[Z] - gSolidBox.min[Z] + 1;
 
     // maximum short size
-    maxShortSize = (1 << 16) - 1;
+    maxShortSize = SHRT_MAX;
 
     if (width > maxShortSize) {
         // Width of region too large for a .schematic");
@@ -32952,24 +32983,38 @@ static int writeSchematicBox()
         return retCode | MW_DIMENSION_TOO_LARGE;
     }
 
+    if (!nbtGetValidatedSchematicVolume(width, height, length, &totalSize)) {
+        return retCode | MW_WORLD_EXPORT_TOO_LARGE;
+    }
+    blocks = block_ptr = (unsigned char*)malloc((size_t)totalSize);
+    blockData = blockData_ptr = (unsigned char*)malloc((size_t)totalSize);
+    if (blocks == NULL || blockData == NULL) {
+        free(blocks);
+        free(blockData);
+        return retCode | MW_WORLD_EXPORT_TOO_LARGE;
+    }
+
     concatFileName3(schematicFileNameWithSuffix, gOutputFilePath, gOutputFileRoot, L".schematic");
 
     // create the schematic file
     err = _wfopen_s(&fptr, schematicFileNameWithSuffix, L"wb");
     if (fptr == NULL || err != 0)
     {
+        free(blocks);
+        free(blockData);
         return retCode | MW_CANNOT_CREATE_FILE;
     }
     // now make it a gzip file
     gz = gzdopen(_fileno(fptr), "wb");
     if (gz == NULL)
     {
+        fclose(fptr);
+        free(blocks);
+        free(blockData);
         return retCode | MW_CANNOT_CREATE_FILE;
     }
 
     addOutputFilenameToList(schematicFileNameWithSuffix);
-
-    blocks = blockData = NULL;
 
     if (gModel.options->pEFD->radioRotate0)
     {
@@ -33058,10 +33103,6 @@ static int writeSchematicBox()
     CHECK_SCHEMATIC_QUIT(schematicWriteString(gz, "Materials", "Alpha"));
 
     // Copy
-    totalSize = width * height * length;
-    blocks = block_ptr = (unsigned char*)malloc(totalSize);
-    blockData = blockData_ptr = (unsigned char*)malloc(totalSize);
-
     progressStart = gProgress.start.output;
     progressOffset = gProgress.absolute.output;
 
@@ -36362,6 +36403,9 @@ static int decimateMesh()
 
     // first use of this pool, normally not needed, so allocate it now
     gModel.simplifyFaceRecordPool = (SimplifyFaceRecordPool*)malloc(sizeof(SimplifyFaceRecordPool));
+    if (gModel.simplifyFaceRecordPool == NULL) {
+        return MW_WORLD_EXPORT_TOO_LARGE;
+    }
     gModel.simplifyFaceRecordPool->count = 0;
     gModel.simplifyFaceRecordPool->pNext = NULL;
     gModel.headSimplifyFaceRecordPool = gModel.simplifyFaceRecordPool;
@@ -36369,6 +36413,8 @@ static int decimateMesh()
     if ((gModel.options->pEFD->fileType == FILE_TYPE_WAVEFRONT_ABS_OBJ) || (gModel.options->pEFD->fileType == FILE_TYPE_WAVEFRONT_REL_OBJ)) {
         gModel.simplifyUVGridList = (int*)malloc((SIMPLIFY_MAX_DIMENSION + 1) * (SIMPLIFY_MAX_DIMENSION + 1) * sizeof(int));
         if (gModel.simplifyUVGridList == NULL) {
+            free(gModel.simplifyFaceRecordPool);
+            gModel.simplifyFaceRecordPool = gModel.headSimplifyFaceRecordPool = NULL;
             return MW_WORLD_EXPORT_TOO_LARGE;
         }
         memset(gModel.simplifyUVGridList, 0, (SIMPLIFY_MAX_DIMENSION + 1) * (SIMPLIFY_MAX_DIMENSION + 1) * sizeof(int));
@@ -36378,6 +36424,8 @@ static int decimateMesh()
     int simplifyFaceListSize = min(gModel.faceCount, SIMPLIFY_FACE_RECORD_POOL_SIZE);   // TODO: tune this initial size?
     SimplifyFaceRecord** simplifyFaceList = (SimplifyFaceRecord**)malloc(simplifyFaceListSize * sizeof(SimplifyFaceRecord*));
     if (simplifyFaceList == NULL) {
+        free(gModel.simplifyFaceRecordPool);
+        gModel.simplifyFaceRecordPool = gModel.headSimplifyFaceRecordPool = NULL;
         return MW_WORLD_EXPORT_TOO_LARGE;
     }
     int noteProgress = 1 + (int)((float)gModel.faceCount / (gProgress.absolute.decimate / 0.05f));
@@ -36409,6 +36457,17 @@ static int decimateMesh()
             // Store the normal direction, normal distance minimum X and Y of the face, for faster sorting. X and Y is in relation to the normal, e.g.,
             // if normal is +X, store normal "distance" X (sort key), then stored X = Z, stored Y = Y, something like that.
             SimplifyFaceRecord* pSFR = allocSimplifyFaceRecordFromPool();
+            if (pSFR == NULL) {
+                free(simplifyFaceList);
+                SimplifyFaceRecordPool* pSFRPool = gModel.headSimplifyFaceRecordPool;
+                while (pSFRPool) {
+                    SimplifyFaceRecordPool* pNext = pSFRPool->pNext;
+                    free(pSFRPool);
+                    pSFRPool = pNext;
+                }
+                gModel.simplifyFaceRecordPool = gModel.headSimplifyFaceRecordPool = NULL;
+                return MW_WORLD_EXPORT_TOO_LARGE;
+            }
             pSFR->pFace = pFace;
             pSFR->normalDirection = pFace->normalIndex;
             pSFR->pXneighborSFR = NULL;
@@ -36419,7 +36478,20 @@ static int decimateMesh()
             sameFaceCount++;
             if (simplifyFaceListSize < sameFaceCount) {
                 simplifyFaceListSize = 2 * sameFaceCount;
-                simplifyFaceList = (SimplifyFaceRecord**)realloc(simplifyFaceList, simplifyFaceListSize * sizeof(SimplifyFaceRecord*));
+                SimplifyFaceRecord** largerSimplifyFaceList =
+                    (SimplifyFaceRecord**)realloc(simplifyFaceList, simplifyFaceListSize * sizeof(SimplifyFaceRecord*));
+                if (largerSimplifyFaceList == NULL) {
+                    free(simplifyFaceList);
+                    SimplifyFaceRecordPool* pSFRPool = gModel.headSimplifyFaceRecordPool;
+                    while (pSFRPool) {
+                        SimplifyFaceRecordPool* pNext = pSFRPool->pNext;
+                        free(pSFRPool);
+                        pSFRPool = pNext;
+                    }
+                    gModel.simplifyFaceRecordPool = gModel.headSimplifyFaceRecordPool = NULL;
+                    return MW_WORLD_EXPORT_TOO_LARGE;
+                }
+                simplifyFaceList = largerSimplifyFaceList;
             }
             simplifyFaceList[sameFaceCount-1] = pSFR;
         }
