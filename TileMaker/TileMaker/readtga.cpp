@@ -31,6 +31,7 @@ THE POSSIBILITY OF SUCH DAMAGE.
 #include <assert.h>
 
 #include <iostream>
+#include <limits>
 
 // calls https://github.com/aseprite/tga
 
@@ -81,10 +82,28 @@ int readtga(progimage_info* im, wchar_t* filename, LodePNGColorType colortype)
 
     tga::Image image;
     image.bytesPerPixel = header.bytesPerPixel();
-    image.rowstride = header.width * header.bytesPerPixel();
+    size_t rowstride = (size_t)header.width * (size_t)image.bytesPerPixel;
+    if (rowstride == 0 || rowstride > (size_t)std::numeric_limits<uint32_t>::max() ||
+        (size_t)header.height > std::numeric_limits<size_t>::max() / rowstride) {
+        fclose(f);
+        return 83;
+    }
+    size_t imageSize = rowstride * (size_t)header.height;
+    if (imageSize == 0 || imageSize > (size_t)std::numeric_limits<uint32_t>::max()) {
+        fclose(f);
+        return 83;
+    }
+    image.rowstride = (uint32_t)rowstride;
 
-    std::vector<uint8_t> buffer(image.rowstride * header.height);
-    image.pixels = &buffer[0];
+    std::vector<uint8_t> buffer;
+    try {
+        buffer.resize(imageSize);
+    }
+    catch (...) {
+        fclose(f);
+        return 83;
+    }
+    image.pixels = buffer.data();
 
     if (!decoder.readImage(header, image, nullptr)) {
         fclose(f);
@@ -267,4 +286,3 @@ int readImageHeader(progimage_info* im, wchar_t* filename, LodePNGColorType& col
     // unknown image type
     return 999;
 }
-

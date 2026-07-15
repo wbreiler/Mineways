@@ -240,7 +240,7 @@ static int setBlackToNearlyBlack(progimage_info* src);
 static int copyPNGTile(progimage_info* dst, int channels, unsigned long dst_x, unsigned long dst_y, unsigned long chosenTile, progimage_info* src,
 	unsigned long dst_x_lo, unsigned long dst_y_lo, unsigned long dst_x_hi, unsigned long dst_y_hi, unsigned long src_x_lo, unsigned long src_y_lo, unsigned long flags, float zoom);
 static void multPNGTileByColor(progimage_info* dst, int dst_x, int dst_y, int* color);
-static void getPNGPixel(progimage_info* src, int channels, int col, int row, unsigned char* color);
+static bool getPNGPixel(progimage_info* src, int channels, int col, int row, unsigned char* color);
 static void getBrightestPNGPixel(progimage_info* src, int channels, unsigned long col, unsigned long row, unsigned long res, unsigned char* color, int* locc, int* locr);
 static int computeVerticalTileOffset(progimage_info* src, int chosenTile);
 static int isPNGTileEmpty(progimage_info* dst, int dst_x, int dst_y);
@@ -2116,9 +2116,10 @@ static int copyPNGTile(progimage_info* dst, int channels, unsigned long dst_x, u
 				// Treat alpha == 0 as clear - nicer to set to black. This happens with fire,
 				// and the flowers and double flowers have junk in the RGB channels where alpha == 0.
 				// negate column and row, as Minecraft stores these reversed (left and right chest, basically)
-				getPNGPixel(src, channels,
-					src_x_lo + ((flags & 0x1) ? (dst_x_hi - col - 1) : (col - dst_x_lo)),
-					src_start + src_y_lo + ((flags & 0x2) ? (dst_y_hi - row - 1) : (row - dst_y_lo)), color);
+					if (!getPNGPixel(src, channels,
+						src_x_lo + ((flags & 0x1) ? (dst_x_hi - col - 1) : (col - dst_x_lo)),
+						src_start + src_y_lo + ((flags & 0x2) ? (dst_y_hi - row - 1) : (row - dst_y_lo)), color))
+						return 1;
 				if (channels == 4 && color[3] == 0)
 				{
 					memset(dst_data, 0, channels);
@@ -2167,9 +2168,10 @@ static int copyPNGTile(progimage_info* dst, int channels, unsigned long dst_x, u
 			{
 				// Treat alpha == 0 as clear - nicer to set to black. This happens with fire,
 				// and the flowers and double flowers have junk in the RGB channels where alpha == 0.
-				getPNGPixel(src, channels,
-					src_x_lo + ((flags & 0x1) ? (dst_x_hi - col - 1) : (col - dst_x_lo)),
-					src_start + src_y_lo + ((flags & 0x2) ? (dst_y_hi - row - 1) : (row - dst_y_lo)), color);
+					if (!getPNGPixel(src, channels,
+						src_x_lo + ((flags & 0x1) ? (dst_x_hi - col - 1) : (col - dst_x_lo)),
+						src_start + src_y_lo + ((flags & 0x2) ? (dst_y_hi - row - 1) : (row - dst_y_lo)), color))
+						return 1;
 				if (channels == 4 && color[3] == 0)
 				{
 					color[0] = color[1] = color[2] = 0;
@@ -2220,7 +2222,8 @@ static int copyPNGTile(progimage_info* dst, int channels, unsigned long dst_x, u
 					{
 						// Treat alpha == 0 as clear - nicer to set to black. This happens with fire,
 						// and the flowers and double flowers have junk in the RGB channels where alpha == 0.
-						getPNGPixel(src, channels, (col + src_x_lo - dst_x_lo) * izoom + zoomcol, (row + src_y_lo - dst_y_lo) * izoom + zoomrow, color);
+							if (!getPNGPixel(src, channels, (col + src_x_lo - dst_x_lo) * izoom + zoomcol, (row + src_y_lo - dst_y_lo) * izoom + zoomrow, color))
+								return 1;
 						if (channels == 4 && color[3] == 0)
 						{
 							color[0] = color[1] = color[2] = 0;
@@ -2288,16 +2291,27 @@ static int computeVerticalTileOffset(progimage_info* src, int chosenTile)
 	return offset;
 }
 
-static void getPNGPixel(progimage_info* src, int channels, int col, int row, unsigned char* color)
+static bool getPNGPixel(progimage_info* src, int channels, int col, int row, unsigned char* color)
 {
-	unsigned char* src_data;
+	if (color == NULL)
+		return false;
+	memset(color, 0, 4);
+	if (src == NULL || channels <= 0 || channels > 4 || col < 0 || row < 0 ||
+		col >= src->width || row >= src->height || src->width <= 0 || src->height <= 0)
+		return false;
+
+	const size_t availablePixels = src->image_data.size() / (size_t)channels;
+	if ((size_t)col >= availablePixels ||
+		(size_t)row > (availablePixels - 1 - (size_t)col) / (size_t)src->width)
+		return false;
+	const size_t pixelIndex = (size_t)row * (size_t)src->width + (size_t)col;
+	const unsigned char* src_data = src->image_data.data() + pixelIndex * (size_t)channels;
 
 	//if ( ( src->color_type == PNG_COLOR_TYPE_RGB_ALPHA ) || ( src->color_type == PNG_COLOR_TYPE_PALETTE ) || ( src->color_type == PNG_COLOR_TYPE_GRAY_ALPHA ) )
 	//if ( src->channels == 4 )
 	//{
 
 	// LodePNG does all the work for us, going to RGBA by default:
-	src_data = &src->image_data[0] + (row * src->width + col) * channels;
 	memcpy(color, src_data, channels);
 
 	//}
@@ -2334,6 +2348,7 @@ static void getPNGPixel(progimage_info* src, int channels, int col, int row, uns
 	//	// unknown type
 	//	assert(0);
 	//}
+	return true;
 }
 
 static void getBrightestPNGPixel(progimage_info* src, int channels, unsigned long col, unsigned long row, unsigned long res, unsigned char* color, int* locc, int* locr)
@@ -2343,10 +2358,12 @@ static void getBrightestPNGPixel(progimage_info* src, int channels, unsigned lon
 	unsigned char testColor[4];
 	int maxSum, testSum;
 	maxSum = -1;
+	color[0] = color[1] = color[2] = 0;
 	color[3] = 255;
 	for (r = 0; r < res; r++) {
 		for (c = 0; c < res; c++) {
-			getPNGPixel(src, channels, col + c, row + r, testColor);
+			if (!getPNGPixel(src, channels, col + c, row + r, testColor))
+				continue;
 			testSum = (int)testColor[0] + (int)testColor[1] + (int)testColor[2];
 			if (testSum > maxSum) {
 				maxSum = testSum;
