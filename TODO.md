@@ -271,3 +271,29 @@ first. Left in the backlog below rather than half-implementing a
   - `Win/blockInfo.cpp`
   - `Win/ObjFileManip.cpp`
   - `Win/MinewaysMap.cpp`
+
+### macOS port review backlog (2026-07-16)
+
+Work through these one at a time, in order. Changes for this backlog are
+restricted to `Mac/` and macOS-specific build/workflow files; do not modify
+`Win/`.
+
+- [x] Clear cached chunks and prior schematic allocations before loading a
+      different world or the Test Block World, preventing data from the
+      previous source from appearing in maps or exports.
+- [x] Keep `gTargetDepth` synchronized with the bottom slider when loading a
+      world so selections and exports use the displayed minimum depth.
+- [x] Stream Import Settings headers instead of reading and decoding an entire
+      OBJ/USDA twice, which can exhaust memory for large exports.
+- [x] Leave the application in a coherent unloaded state after a world or
+      schematic load fails; `gLoaded` must not remain true for a partial guide.
+- [x] Detect Minecraft's newer `dimensions/` directory layout on macOS so
+      Nether and End navigation use the correct paths.
+- [x] Derive the macOS About, export-metadata, and `Info.plist` versions from a
+      single release version source.
+- [x] Add generated header dependencies to the macOS Makefile so incremental
+      builds cannot retain stale objects after header-only changes.
+- [x] Validate persisted Culling Scheme hex completely and zero-initialize the
+      destination before activating it.
+- [x] Check Import Settings limits in UTF-8 bytes, avoiding silent truncation
+      of non-ASCII commands and paths.

@@ -941,53 +941,83 @@ TryOtherCommands:
 }
 
 // ── File readers ────────────────────────────────────────────────────────────────────
-static bool ReadAllLines(const wxString& path, wxArrayString& lines, wxString& error)
+enum LineReadResult { LINE_READ_OK, LINE_READ_EOF, LINE_READ_ERROR };
+
+class Utf8LineReader {
+public:
+    Utf8LineReader(const wxString& path, wxString& error) : m_path(path), m_file(path, "rb")
+    {
+        if (!m_file.IsOpened()) error = wxString::Format("Error: could not open file %s", path);
+    }
+
+    bool IsOpened() const { return m_file.IsOpened(); }
+
+    LineReadResult ReadLine(wxString& line, wxString& error)
+    {
+        char bytes[IMPORT_LINE_LENGTH];
+        size_t length = 0;
+        for (;;) {
+            if (m_bufferPos == m_bufferLength) {
+                m_bufferLength = m_file.Read(m_buffer, sizeof(m_buffer));
+                m_bufferPos = 0;
+                if (m_bufferLength == 0) {
+                    if (m_file.Error()) {
+                        error = wxString::Format("Error: failed while reading file %s", m_path);
+                        return LINE_READ_ERROR;
+                    }
+                    if (length == 0) return LINE_READ_EOF;
+                    break;
+                }
+            }
+
+            char c = m_buffer[m_bufferPos++];
+            if (m_skipLF) {
+                m_skipLF = false;
+                if (c == '\n') continue;
+            }
+            if (c == '\n') break;
+            if (c == '\r') { m_skipLF = true; break; }
+            if (length >= sizeof(bytes) - 1) {
+                error = "data on line was longer than 1023 UTF-8 bytes - aborting!";
+                return LINE_READ_ERROR;
+            }
+            bytes[length++] = c;
+        }
+
+        size_t wideLength = wxConvUTF8.ToWChar(nullptr, 0, bytes, length);
+        if (wideLength == wxCONV_FAILED) {
+            error = wxString::Format("Error: file is not valid UTF-8: %s", m_path);
+            return LINE_READ_ERROR;
+        }
+        wchar_t wide[IMPORT_LINE_LENGTH];
+        if (wideLength > 0 && wxConvUTF8.ToWChar(wide, WXSIZEOF(wide), bytes, length) == wxCONV_FAILED) {
+            error = wxString::Format("Error: could not decode UTF-8 file %s", m_path);
+            return LINE_READ_ERROR;
+        }
+        line.assign(wide, wideLength);
+        return LINE_READ_OK;
+    }
+
+private:
+    wxString m_path;
+    wxFFile m_file;
+    char m_buffer[8192];
+    size_t m_bufferPos = 0;
+    size_t m_bufferLength = 0;
+    bool m_skipLF = false;
+};
+
+static bool CopyLineToImportBuffer(const wxString& line, char (&lineBuf)[IMPORT_LINE_LENGTH],
+                                   wxString& error)
 {
-    wxFFile fh(path, "rb");
-    if (!fh.IsOpened()) {
-        error = wxString::Format("Error: could not open file %s", path);
+    wxScopedCharBuffer utf8 = line.utf8_str();
+    size_t byteLength = utf8.length();
+    if (byteLength >= sizeof(lineBuf)) {
+        error = "data on line was longer than 1023 UTF-8 bytes - aborting!";
         return false;
     }
-
-    wxFileOffset fileLength = fh.Length();
-    if (fileLength == wxInvalidOffset || (uint64_t)fileLength > SIZE_MAX) {
-        error = wxString::Format("Error: could not determine the size of file %s", path);
-        return false;
-    }
-    size_t byteCount = (size_t)fileLength;
-    std::vector<char> bytes;
-    try {
-        bytes.resize(byteCount);
-    } catch (const std::bad_alloc&) {
-        error = wxString::Format("Error: not enough memory to read file %s", path);
-        return false;
-    }
-    if (byteCount > 0 && fh.Read(bytes.data(), byteCount) != byteCount) {
-        error = wxString::Format("Error: failed while reading file %s", path);
-        return false;
-    }
-
-    size_t wideLength = wxConvUTF8.ToWChar(nullptr, 0, byteCount ? bytes.data() : "", byteCount);
-    if (wideLength == wxCONV_FAILED) {
-        error = wxString::Format("Error: file is not valid UTF-8: %s", path);
-        return false;
-    }
-    std::vector<wchar_t> wide;
-    try {
-        wide.resize(wideLength + 1, L'\0');
-    } catch (const std::bad_alloc&) {
-        error = wxString::Format("Error: not enough memory to decode file %s", path);
-        return false;
-    }
-    if (wideLength > 0 &&
-        wxConvUTF8.ToWChar(wide.data(), wide.size(), bytes.data(), byteCount) == wxCONV_FAILED) {
-        error = wxString::Format("Error: could not decode UTF-8 file %s", path);
-        return false;
-    }
-    wxString contents(wide.data(), wideLength);
-    contents.Replace("\r\n", "\n");
-    contents.Replace("\r", "\n");
-    lines = wxSplit(contents, '\n');
+    memcpy(lineBuf, utf8.data(), byteLength);
+    lineBuf[byteLength] = 0;
     return true;
 }
 
@@ -998,9 +1028,9 @@ static bool ReadAllLines(const wxString& path, wxArrayString& lines, wxString& e
 // full success (see ImportedSet::scratchEfd).
 static bool ImportModelFile(const wxString& path, ImportedSet& is)
 {
-    wxArrayString lines;
     wxString err;
-    if (!ReadAllLines(path, lines, err)) { is.errorMessages += err + "\n"; return false; }
+    Utf8LineReader reader(path, err);
+    if (!reader.IsOpened()) { is.errorMessages += err + "\n"; return false; }
 
     is.pEFD = &is.scratchEfd;
     InitViewExportData(is.scratchEfd);   // sane defaults if "Created for"/"Set render type:" is never found
@@ -1009,16 +1039,15 @@ static bool ImportModelFile(const wxString& path, ImportedSet& is)
 
     int consecutiveUseless = 0;
     bool endReading = false;
-    for (size_t i = 0; i < lines.size() && !endReading; i++) {
+    while (!endReading) {
+        wxString line;
+        LineReadResult readResult = reader.ReadLine(line, err);
+        if (readResult == LINE_READ_EOF) break;
+        if (readResult == LINE_READ_ERROR) { is.errorMessages += err + "\n"; return false; }
         is.lineNumber++;
-        if (lines[i].length() >= IMPORT_LINE_LENGTH) {
-            is.errorMessages += "data on line was longer than 1024 characters - aborting!\n";
-            return false;
-        }
-        wxString cleaned = PrepareLineData(lines[i], true);
+        wxString cleaned = PrepareLineData(line, true);
         char lineBuf[IMPORT_LINE_LENGTH];
-        strncpy(lineBuf, cleaned.utf8_str(), sizeof(lineBuf) - 1);
-        lineBuf[sizeof(lineBuf) - 1] = 0;
+        if (!CopyLineToImportBuffer(cleaned, lineBuf, err)) { is.errorMessages += err + "\n"; return false; }
 
         int ret = InterpretImportLine(lineBuf, is);
         if (ret & (INTERPRETER_FOUND_VALID_LINE | INTERPRETER_FOUND_VALID_EXPORT_LINE)) {
@@ -1051,28 +1080,25 @@ static bool ImportModelFile(const wxString& path, ImportedSet& is)
 // InterpretImportLine (a script is a superset of the header syntax plus action commands).
 static bool ReadAndExecuteScript(const wxString& path, ImportedSet& is)
 {
-    wxArrayString lines;
-    wxString err;
-    if (!ReadAllLines(path, lines, err)) { is.errorMessages += err + "\n"; return false; }
-
     auto runPass = [&](bool processData) -> bool {
+        wxString err;
+        Utf8LineReader reader(path, err);
+        if (!reader.IsOpened()) { is.errorMessages += err + "\n"; return false; }
         is.readingModel = false;
         is.processData = processData;
         is.pEFD = GetEfd();
         bool commentBlock = false;
-        for (size_t i = 0; i < lines.size(); i++) {
+        for (;;) {
+            wxString line;
+            LineReadResult readResult = reader.ReadLine(line, err);
+            if (readResult == LINE_READ_EOF) break;
+            if (readResult == LINE_READ_ERROR) { is.errorMessages += err + "\n"; return false; }
             is.lineNumber++;
-            if (lines[i].length() >= IMPORT_LINE_LENGTH) {
-                is.errorMessages += "data on line was longer than 1024 characters - aborting!\n";
-                return false;
-            }
-            wxString line = lines[i];
             bool nextCommentBlock = DealWithCommentBlocks(line, commentBlock);
             if (!commentBlock) {
                 wxString cleaned = PrepareLineData(line, false);
                 char lineBuf[IMPORT_LINE_LENGTH];
-                strncpy(lineBuf, cleaned.utf8_str(), sizeof(lineBuf) - 1);
-                lineBuf[sizeof(lineBuf) - 1] = 0;
+                if (!CopyLineToImportBuffer(cleaned, lineBuf, err)) { is.errorMessages += err + "\n"; return false; }
 
                 int ret = InterpretScriptLine(lineBuf, is);
                 if (ret & INTERPRETER_FOUND_NOTHING_USEFUL) {
@@ -1090,31 +1116,31 @@ static bool ReadAndExecuteScript(const wxString& path, ImportedSet& is)
 
     is.errorsFound = 0;
     is.lineNumber = 1;
-    runPass(false);   // syntax check only — no side effects
+    if (!runPass(false)) return false;   // syntax check only — no side effects
     if (is.errorsFound > 0) return false;
 
     is.errorMessages.Clear();
     is.errorsFound = 0;
     is.lineNumber = 1;
     is.closeProgram = false;
-    runPass(true);    // for real
-    return is.errorsFound == 0;
+    return runPass(true) && is.errorsFound == 0;    // for real
 }
 
 // ── Top-level entry point ──────────────────────────────────────────────────────────────
 bool ImportSettingsFile(wxWindow* parent, const wxString& path, wxString& errorOut)
 {
     (void)parent;
-    wxArrayString firstLineOnly;
     wxString err;
-    if (!ReadAllLines(path, firstLineOnly, err) || firstLineOnly.IsEmpty()) {
+    Utf8LineReader reader(path, err);
+    wxString firstLine;
+    LineReadResult readResult = reader.IsOpened() ? reader.ReadLine(firstLine, err) : LINE_READ_ERROR;
+    if (readResult != LINE_READ_OK) {
         errorOut = err.IsEmpty() ? wxString::Format("Error: could not read file %s", path) : err;
         return false;
     }
 
     // Same detection Win/Mineways.cpp's importSettings uses: does the first line look like
     // one of Mineways' own export headers? If not, treat the file as a script.
-    const wxString& firstLine = firstLineOnly[0];
     bool exported = firstLine.Contains("# Wavefront OBJ file made by Mineways") ||
                     firstLine.Contains("#usda 1.0") ||
                     firstLine.Contains("#VRML V2.0 utf8") ||

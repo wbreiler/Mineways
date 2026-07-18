@@ -85,14 +85,28 @@ static bool loadScheme(int id, MacCullingScheme& cs)
     if (!cfg.Read("name", &name) || !cfg.Read("culled", &hex)) {
         cfg.SetPath("/"); return false;
     }
-    strncpy(cs.name, name.utf8_str(), 254); cs.name[254] = '\0';
-    cs.id = id;
-    for (int i = 0; i < NUM_CULL_ENTRIES && 2*i+1 < (int)hex.length(); i++) {
-        unsigned long v = 0;
-        hex.Mid(2*i, 2).ToULong(&v, 16);
-        cs.culled[i] = (unsigned char)v;
+
+    if (hex.length() != NUM_CULL_ENTRIES * 2) {
+        cfg.SetPath("/"); return false;
     }
-    cfg.SetPath("/"); return true;
+
+    MacCullingScheme decoded = {};
+    wxScopedCharBuffer utf8Name = name.utf8_str();
+    if (!utf8Name) {
+        cfg.SetPath("/"); return false;
+    }
+    strncpy(decoded.name, utf8Name.data(), 254); decoded.name[254] = '\0';
+    decoded.id = id;
+    for (int i = 0; i < NUM_CULL_ENTRIES; i++) {
+        unsigned long v = 0;
+        if (!hex.Mid(2*i, 2).ToULong(&v, 16) || v > 0xff) {
+            cfg.SetPath("/"); return false;
+        }
+        decoded.culled[i] = (unsigned char)v;
+    }
+    cfg.SetPath("/");
+    cs = decoded;
+    return true;
 }
 
 static void deleteScheme(int id)

@@ -184,15 +184,19 @@ static void ExportProgressCB(float progress, wchar_t* buf)
     gExportProgressDlg->Update(gExportProgressLastValue, gExportProgressLastMsg);
 }
 
+static void ClearLoadedWorldData()
+{
+    CloseAll();
+    free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
+    free(gWorldGuide.sch.data);   gWorldGuide.sch.data   = nullptr;
+    memset(&gWorldGuide, 0, sizeof(gWorldGuide));
+    gWorldGuide.type = WORLD_UNLOADED_TYPE;
+    gLoaded = FALSE;
+}
+
 // Returns 0 on success, non-zero on error (mirrors Win loadSchematic / loadSpongeSchematic).
 static int LoadSchematicFile(const wchar_t* pathAndFile, bool isSponge)
 {
-    CloseAll();
-
-    // Free any prior schematic data
-    free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
-    free(gWorldGuide.sch.data);   gWorldGuide.sch.data   = nullptr;
-
     if (isSponge) {
         int w = 0, h = 0, l = 0;
         unsigned char* blocks = nullptr;
@@ -699,6 +703,8 @@ void MinewaysFrame::OnTestBlockWorld(wxCommandEvent&) { LoadTestBlockWorld(); }
 
 void MinewaysFrame::LoadTestBlockWorld()
 {
+    ClearLoadedWorldData();
+
     gWorldGuide.type  = WORLD_TEST_BLOCK_TYPE;
     gWorldGuide.world[0] = 0;
     gVersionID        = 3953;   // current data version
@@ -827,14 +833,12 @@ void MinewaysFrame::OnOpenFile(wxCommandEvent&)
 // Returns an empty string on success, or a human-readable error message on failure.
 wxString MinewaysFrame::LoadSchematic(const wxString& path)
 {
+    ClearLoadedWorldData();
+
     bool isSponge = path.Lower().EndsWith(".schem");
     wchar_t schematicPath[MAX_PATH_AND_FILE];
     if (!_mwUtf8ToWideBuffer(path.utf8_str(), schematicPath, MAX_PATH_AND_FILE))
         return "The schematic path is invalid or too long.";
-
-    CloseAll();
-    free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
-    free(gWorldGuide.sch.data);   gWorldGuide.sch.data   = nullptr;
 
     gWorldGuide.type = WORLD_SCHEMATIC_TYPE;
     gWorldGuide.sch.isSponge = isSponge;
@@ -843,7 +847,7 @@ wxString MinewaysFrame::LoadSchematic(const wxString& path)
 
     int err = LoadSchematicFile(gWorldGuide.world, isSponge);
     if (err != 0) {
-        gWorldGuide.type = WORLD_UNLOADED_TYPE;
+        ClearLoadedWorldData();
         return wxString::Format("Could not load schematic (error %d).", err);
     }
 
@@ -1056,7 +1060,7 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
         gMinHeight, gMaxHeight,
         ExportProgressCB, gSelectTerrainPathAndName, (wchar_t*)getSelectedCullingSchemeW(),
         &outputFileList,
-        13, 0, gVersionID,
+        MAC_MINEWAYS_VERSION_MAJOR, MAC_MINEWAYS_VERSION_MINOR, gVersionID,
         nullptr /*changeBlock*/, 16 /*instanceChunkSize*/,
         userSelectedBiome, biomeIndex,
         groupCount, groupCountSize, groupCountArray);
@@ -1107,7 +1111,7 @@ void MinewaysFrame::OnQuit(wxCommandEvent&) { Close(true); }
 void MinewaysFrame::OnAbout(wxCommandEvent&)
 {
     // Matches Win/Mineways.rc's IDD_ABOUTBOX static text verbatim.
-    wxMessageBox("Mineways, Version " MINEWAYS_VERSION_STRING "\n"
+    wxMessageBox("Mineways, Version " MAC_MINEWAYS_VERSION_STRING "\n"
                  "Copyright (c) 2011 Eric Haines\n\n"
                  "Free and open source Minecraft model exporter.\n"
                  "Visit http://mineways.com for docs and code.\n\n"
@@ -1649,6 +1653,8 @@ void MinewaysFrame::OnZoomOutFurther(wxCommandEvent&)
 // Returns "" on success, or a human-readable error message on failure (caller shows it).
 wxString MinewaysFrame::LoadWorldFromDir(const wxString& dir)
 {
+    ClearLoadedWorldData();
+
     wchar_t wdir[MAX_PATH_AND_FILE];
     if (!_mwUtf8ToWideBuffer(dir.utf8_str(), wdir, MAX_PATH_AND_FILE))
         return "The world directory path is invalid or too long.";
@@ -1659,12 +1665,15 @@ wxString MinewaysFrame::LoadWorldFromDir(const wxString& dir)
     wcscpy(gWorldGuide.directory, wdir);
     gWorldGuide.nbtVersion = 0;
     gWorldGuide.isServerWorld = false;
+    wxFileName dimensionsDir = wxFileName::DirName(dir);
+    dimensionsDir.AppendDir("dimensions");
+    gWorldGuide.newFormat = wxDirExists(dimensionsDir.GetFullPath());
 
     // Verify it's a valid Anvil world
     wchar_t fileOpened[MAX_PATH_AND_FILE] = {};
     int nbtVer = 0;
     if (GetFileVersion(wdir, &nbtVer, fileOpened, MAX_PATH_AND_FILE) != 0) {
-        gWorldGuide.type = WORLD_UNLOADED_TYPE;
+        ClearLoadedWorldData();
         return "Could not read level.dat in this folder.";
     }
     gWorldGuide.nbtVersion = nbtVer;
@@ -1693,6 +1702,7 @@ wxString MinewaysFrame::LoadWorldFromDir(const wxString& dir)
     gCurX = (double)spawnX;
     gCurZ = (double)spawnZ;
     gCurDepth = gMaxHeight;
+    gTargetDepth = gMinHeight;
     gCurScale = 1.0;
 
     gLoaded = TRUE;
@@ -1703,8 +1713,8 @@ wxString MinewaysFrame::LoadWorldFromDir(const wxString& dir)
         m_sliderTop->SetValue(gCurDepth);
         m_labelTop->SetLabel(wxString::Format("%d", gCurDepth));
         m_sliderBot->SetRange(gMinHeight, gMaxHeight);
-        m_sliderBot->SetValue(gMinHeight);
-        m_labelBot->SetLabel(wxString::Format("%d", gMinHeight));
+        m_sliderBot->SetValue(gTargetDepth);
+        m_labelBot->SetLabel(wxString::Format("%d", gTargetDepth));
     }
     SetStatusText(wxString::Format("Loaded: %s  (spawn %d,%d,%d)",
                   dir.AfterLast('/'), spawnX, spawnY, spawnZ), 0);

@@ -36,14 +36,12 @@ jobs:
         run: brew install wxwidgets dylibbundler
 
       - name: Build app bundle
-        run: make -C Mac app
-
-      - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Mac/Mineways.app/Contents/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" Mac/Mineways.app/Contents/Info.plist
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            make -C Mac MINEWAYS_VERSION="${GITHUB_REF#refs/tags/v}" app
+          else
+            make -C Mac app
+          fi
 
       - name: Bundle dependencies (make app self-contained)
         run: |
