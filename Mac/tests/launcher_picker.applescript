@@ -17,13 +17,11 @@ on run argv
             if operation is "title" then return name of window 1
             if operation is "inspect" then
                 set details to (name of every window as text) & return
-                set elements to entire contents of window 1
-                repeat with element in elements
-                    try
-                        set details to details & (role of element) & " | " & (name of element as text) & " | " & (value of element as text) & return
-                    end try
-                    if (length of details) > 11000 then exit repeat
-                end repeat
+                tell splitter group 1 of window 1
+                    set details to details & "labels=" & (value of every static text as text) & return
+                    set details to details & "buttons=" & (name of every button as text) & return
+                    set details to details & "fields=" & (value of every text field as text)
+                end tell
                 return details
             end if
             if operation is "menu" then
@@ -41,9 +39,28 @@ on run argv
                 delay 0.5
                 if not (exists sheet 1 of window 1) then error "The Go to Folder sheet did not open."
                 keystroke "a" using command down
-                keystroke (item 3 of argv)
+                keystroke (item 6 of argv)
                 key code 36
-                delay 0.6
+                repeat 30 times
+                    if not (exists sheet 1 of window 1) then exit repeat
+                    delay 0.1
+                end repeat
+                if exists sheet 1 of window 1 then error "Go to Folder did not finish."
+                keystroke "2" using command down
+                delay 0.5
+                set foundRow to false
+                set entries to entire contents of splitter group 1 of splitter group 1 of window 1
+                repeat with entry in entries
+                    try
+                        if (role of entry) is "AXStaticText" and (value of entry) is (item 7 of argv) then
+                            click entry
+                            set foundRow to true
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+                if not foundRow then error "The selected folder/file row is absent: " & (item 7 of argv)
+                delay 0.2
                 click openButton
                 return "selected"
             end if

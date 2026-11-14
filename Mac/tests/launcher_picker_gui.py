@@ -44,6 +44,8 @@ def run(command, timeout=30, **kwargs):
 
 
 def ui(operation, pid=0, *args):
+    if operation == 'choose':
+        args = (*args, Path(args[0]).parent, Path(args[0]).name)
     if operation in ('menu', 'choose'):
         print('UI ' + operation + ': ' + ' | '.join(map(str, args)), flush=True)
     return run(['/usr/bin/osascript', str(APPLE), operation, str(pid), *map(str, args)],
@@ -68,7 +70,7 @@ def capture_window(pid, destination):
     # Enumerate window IDs, then capture only this app's normal window.
     javascript = '''ObjC.import('CoreGraphics');
 function run(argv) {
- const windows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0));
+ const windows = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1, 0)));
  const w = windows.find(w => w.kCGWindowOwnerPID === Number(argv[0]) && w.kCGWindowLayer === 0);
  if (!w) throw Error('The test app has no on-screen window');
  return String(w.kCGWindowNumber);
@@ -123,7 +125,7 @@ def smoke(package, installations, output):
                                     'Choose a Prism or CurseForge modpack instance'))
                 wait_for(lambda: ui('choose', process.pid, setup['world'], 'Choose',
                                     "Choose a world from this modpack's saves folder"))
-                wait_for(lambda: 'Original exporter test' in ui('title', process.pid), timeout=600)
+                wait_for(lambda: 'Original exporter test' in ui('title', process.pid), timeout=180)
                 ui('menu', process.pid, 'Import Settings...')
                 wait_for(lambda: ui('choose', process.pid, script, 'Open',
                                     'Import Settings from model or script file'))
