@@ -91,7 +91,7 @@ on run argv
             if operation is "poll-export" then
                 set windowName to name of window 1
                 if windowName contains "Original exporter test" then return "main"
-                if windowName is "Export done" then
+                if windowName is "Export done" or (exists static text "Export done" of window 1) then
                     click button "OK" of window 1
                     return "dismissed-export"
                 end if
