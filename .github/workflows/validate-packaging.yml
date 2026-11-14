@@ -2,6 +2,10 @@ name: Check candidate downloads
 on:
   push:
     branches: [codex/package-validation]
+    paths:
+      - .github/workflows/validate-packaging.yml
+      - Mac/tests/launcher_picker_gui.py
+      - Mac/tests/launcher_picker.applescript
 permissions:
   contents: read
   actions: read

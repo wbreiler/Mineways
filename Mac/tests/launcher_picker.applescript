@@ -15,7 +15,17 @@ on run argv
         set targetProcess to item 1 of matches
         tell targetProcess
             if operation is "title" then return name of window 1
-            if operation is "inspect" then return (name of every window as text) & return & (entire contents of window 1 as text)
+            if operation is "inspect" then
+                set details to (name of every window as text) & return
+                set elements to entire contents of window 1
+                repeat with element in elements
+                    try
+                        set details to details & (role of element) & " | " & (name of element as text) & " | " & (value of element as text) & return
+                    end try
+                    if (length of details) > 11000 then exit repeat
+                end repeat
+                return details
+            end if
             if operation is "menu" then
                 set frontmost to true
                 click menu item (item 3 of argv) of menu 1 of menu bar item "File" of menu bar 1
@@ -24,8 +34,17 @@ on run argv
             if operation is "choose" then
                 set frontmost to true
                 if not frontmost then error "The test process is not frontmost."
-                if not (exists button (item 4 of argv) of window 1) then error "Expected a native Open/Choose dialog."
-                if (name of window 1) is not (item 5 of argv) then error "The expected native dialog is not open."
+                set elements to entire contents of window 1
+                set captionFound to false
+                set openButton to missing value
+                repeat with element in elements
+                    try
+                        if (role of element) is "AXStaticText" and (value of element) is (item 5 of argv) then set captionFound to true
+                        if (role of element) is "AXButton" and (name of element) is "Open" then set openButton to contents of element
+                    end try
+                end repeat
+                if not captionFound then error "The expected picker caption is absent."
+                if openButton is missing value then error "The native Open button is absent."
                 keystroke "g" using {command down, shift down}
                 delay 0.5
                 if not (exists sheet 1 of window 1) then error "The Go to Folder sheet did not open."
@@ -33,7 +52,7 @@ on run argv
                 keystroke (item 3 of argv)
                 key code 36
                 delay 0.6
-                click button (item 4 of argv) of window 1
+                click openButton
                 return "selected"
             end if
             if operation is "poll-export" then
