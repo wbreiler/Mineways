@@ -67,16 +67,12 @@ def wait_for(action, timeout=30):
 
 
 def capture_window(pid, destination):
-    # Enumerate window IDs, then capture only this app's normal window.
-    javascript = '''ObjC.import('CoreGraphics');
-function run(argv) {
- const windows = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1, 0)));
- const w = windows.find(w => w.kCGWindowOwnerPID === Number(argv[0]) && w.kCGWindowLayer === 0);
- if (!w) throw Error('The test app has no on-screen window');
- return String(w.kCGWindowNumber);
-}'''
-    window_id = run(['/usr/bin/osascript', '-l', 'JavaScript', '-e', javascript, str(pid)])
-    run(['/usr/sbin/screencapture', '-x', '-o', '-l', window_id, str(destination)])
+    # AX gives the exact own front window, including XPC-hosted native panels.
+    bounds = [int(value.strip()) for value in ui('bounds', pid).split(',')]
+    if len(bounds) != 4:
+        raise AssertionError('Invalid own-window bounds')
+    rectangle = ','.join(map(str, bounds))
+    run(['/usr/sbin/screencapture', '-x', '-R' + rectangle, str(destination)])
     width, height, pixels = decode_png(destination.read_bytes())
     if width < 400 or height < 250:
         raise AssertionError('The captured app window is unexpectedly small')
@@ -86,7 +82,7 @@ function run(argv) {
               for x in range(width // 4, 3 * width // 4)}
     if len(colors) < 16:
         raise AssertionError('The central map capture is empty or has too few colors')
-    return {'window_id': window_id, 'width': width, 'height': height, 'central_colors': len(colors)}
+    return {'bounds': bounds, 'width': width, 'height': height, 'central_colors': len(colors)}
 
 
 def smoke(package, installations, output):

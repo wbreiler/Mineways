@@ -15,6 +15,7 @@ on run argv
         set targetProcess to item 1 of matches
         tell targetProcess
             if operation is "title" then return name of window 1
+            if operation is "bounds" then return (position of window 1) & (size of window 1)
             if operation is "inspect" then
                 set details to (name of every window as text) & return
                 tell splitter group 1 of window 1
@@ -22,6 +23,13 @@ on run argv
                     set details to details & "buttons=" & (name of every button as text) & return
                     set details to details & "fields=" & (value of every text field as text)
                 end tell
+                set entries to entire contents of splitter group 1 of splitter group 1 of window 1
+                repeat with entry in entries
+                    try
+                        set details to details & return & (role of entry) & " | " & (name of entry as text) & " | " & (value of entry as text)
+                    end try
+                    if (length of details) > 11000 then exit repeat
+                end repeat
                 return details
             end if
             if operation is "menu" then
@@ -52,7 +60,7 @@ on run argv
                 set entries to entire contents of splitter group 1 of splitter group 1 of window 1
                 repeat with entry in entries
                     try
-                        if (role of entry) is "AXStaticText" and (value of entry) is (item 7 of argv) then
+                        if (value of entry) is (item 7 of argv) then
                             click entry
                             set foundRow to true
                             exit repeat
