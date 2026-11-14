@@ -15,6 +15,7 @@ on run argv
         set targetProcess to item 1 of matches
         tell targetProcess
             if operation is "title" then return name of window 1
+            if operation is "inspect" then return (name of every window as text) & return & (entire contents of window 1 as text)
             if operation is "menu" then
                 set frontmost to true
                 click menu item (item 3 of argv) of menu 1 of menu bar item "File" of menu bar 1

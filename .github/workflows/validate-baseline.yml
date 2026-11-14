@@ -1,0 +1,46 @@
+name: Verify Windows vanilla reference
+on:
+  push:
+    branches: [codex/package-validation]
+    paths: ['.github/workflows/validate-baseline.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  reference:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: bcef29f6c6953fe0961c65d73e29e9364eac1f4f
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 966c0dc7ac1aba6b67a3083a0dd3505d1c55d385
+          path: vanilla-baseline
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-windows-x64
+          path: candidate
+          github-token: ${{ github.token }}
+          run-id: 43570628030
+      - name: Compare the baseline and the exact Windows candidate
+        shell: pwsh
+        run: |
+          Expand-Archive candidate/Mineways-Windows.zip candidate/extracted
+          git -C vanilla-baseline apply ../tools/fixtures/v14.03-windows-baseline.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath
+          & "$vs\MSBuild\Current\Bin\MSBuild.exe" vanilla-baseline/Win/Mineways.vcxproj -p:Configuration=Release -p:Platform=x64 -p:PlatformToolset=v143 -v:m -nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/test_vanilla_merge.py --baseline-executable vanilla-baseline/Win/x64/Release/Mineways.exe --candidate-executable candidate/extracted/Mineways.exe --output vanilla-parity
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: windows-vanilla-reference
+          path: vanilla-parity

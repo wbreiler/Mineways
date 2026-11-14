@@ -41,5 +41,6 @@ jobs:
           path: |
             picker/*.json
             picker/*.log
+            picker/*.txt
             picker/*/map.png
             launcher-packs/validation.json

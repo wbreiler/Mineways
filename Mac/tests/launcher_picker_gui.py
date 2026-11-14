@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from import_mod_assets import decode_png
 from test_launcher_real_packs import fingerprint, validate_gui_exports
 
-APPLE = Path(__file__).with_suffix('.applescript')
+APPLE = Path(__file__).with_name('launcher_picker.applescript')
 
 
 def export_script(destination):
@@ -35,8 +35,12 @@ def export_script(destination):
 
 
 def run(command, **kwargs):
-    return subprocess.run(command, check=True, capture_output=True, text=True,
-                          timeout=30, **kwargs).stdout.strip()
+    try:
+        return subprocess.run(command, check=True, capture_output=True, text=True,
+                              timeout=30, **kwargs).stdout.strip()
+    except subprocess.CalledProcessError as error:
+        print(error.stderr[-6000:], file=sys.stderr, flush=True)
+        raise
 
 
 def ui(operation, pid=0, *args):
@@ -136,6 +140,12 @@ def smoke(package, installations, output):
                                 'title': ui('title', process.pid), 'export_success_dialogs': alerts,
                                 'map': capture_window(process.pid, destination / 'map.png')})
             validate_gui_exports(installations, output)
+        except Exception:
+            try:
+                (output / 'last-ui.txt').write_text(ui('inspect', process.pid)[-12000:])
+            except Exception as diagnostic_error:
+                print('Could not inspect test UI: ' + str(diagnostic_error), file=sys.stderr)
+            raise
         finally:
             process.terminate()  # Only the exact process created above.
             try:
@@ -156,6 +166,9 @@ def smoke(package, installations, output):
 
 
 class Checks(unittest.TestCase):
+    def test_script_exists(self):
+        self.assertTrue(APPLE.is_file())
+
     def test_script_cannot_load_or_clear_a_scene(self):
         script = export_script(Path('/tmp/output with spaces'))
         self.assertNotIn('Minecraft world:', script)
