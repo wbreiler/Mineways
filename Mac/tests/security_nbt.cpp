@@ -99,7 +99,7 @@ static void checkSponge(const std::string& directory)
         for (bool deferred : { false, true }) {
             readers(sponge(version, { 0 }, deferred), directory, [](bfFile* input) {
                 int width, height, length, dataVersion;
-                unsigned char* blocks;
+                unsigned short* blocks;
                 unsigned short* data;
                 assert(nbtGetSpongeSchematic(input, &width, &height, &length, &blocks, &data, &dataVersion) == 1);
                 assert(width == 1 && height == 1 && length == 1);
@@ -112,7 +112,7 @@ static void checkSponge(const std::string& directory)
                 Bytes{ 0x80, 0x80, 0x80, 0x80, 0x10 }, Bytes{ 0x80, 0x80, 0x80, 0x80, 0x80 } }) {
                 readers(sponge(version, invalid, deferred), directory, [](bfFile* input) {
                     int width, height, length, dataVersion;
-                    unsigned char* blocks = nullptr;
+                    unsigned short* blocks = nullptr;
                     unsigned short* data = nullptr;
                     assert(nbtGetSpongeSchematic(input, &width, &height, &length, &blocks, &data, &dataVersion) == 0);
                     assert(blocks == nullptr && data == nullptr);
@@ -124,7 +124,7 @@ static void checkSponge(const std::string& directory)
         for (int i = 0; i < 129; i++) { multibyte.push_back(0x80); multibyte.push_back(1); }
         readers(sponge(version, multibyte, false, 129, 128), directory, [](bfFile* input) {
             int width, height, length, dataVersion;
-            unsigned char* blocks;
+            unsigned short* blocks;
             unsigned short* data;
             assert(nbtGetSpongeSchematic(input, &width, &height, &length, &blocks, &data, &dataVersion) == 1);
             assert(width == 129 && height == 1 && length == 1);
@@ -134,7 +134,7 @@ static void checkSponge(const std::string& directory)
         // Two encoded bytes do not suffice for two voxels if the first varint takes both.
         readers(sponge(version, { 0x80, 0 }, false, 2), directory, [](bfFile* input) {
             int width, height, length, dataVersion;
-            unsigned char* blocks;
+            unsigned short* blocks;
             unsigned short* data;
             assert(nbtGetSpongeSchematic(input, &width, &height, &length, &blocks, &data, &dataVersion) == 0);
             assert(!blocks && !data);
@@ -159,7 +159,7 @@ static void checkLegacy(const std::string& directory)
     for (const auto& fields : { std::vector<std::string>{ "Blocks", "Data" },
         std::vector<std::string>{ "Data", "Blocks" } }) {
         readers(legacy(fields), directory, [](bfFile* input) {
-            unsigned char blocks = 0xaa;
+            unsigned short blocks = 0xaa;
             unsigned short data = 0xffff;
             assert(nbtGetSchematicBlocksAndData(input, 1, &blocks, &data) == 1);
             assert(blocks == BLOCK_STONE && data == 0x80);
@@ -169,20 +169,20 @@ static void checkLegacy(const std::string& directory)
         std::vector<std::string>{ "Data", "Data" }, std::vector<std::string>{ "Blocks" },
         std::vector<std::string>{ "Data" }, std::vector<std::string>{ "Blocks", "Data", "Blocks" } }) {
         readers(legacy(fields), directory, [](bfFile* input) {
-            unsigned char blocks;
+            unsigned short blocks;
             unsigned short data;
             assert(nbtGetSchematicBlocksAndData(input, 1, &blocks, &data) != 1);
         });
     }
     readers(legacy({ "Blocks", "Data" }, 3), directory, [](bfFile* input) {
-        unsigned char blocks;
+        unsigned short blocks;
         unsigned short data;
         assert(nbtGetSchematicBlocksAndData(input, 1, &blocks, &data) != 1);
     });
     Bytes truncated = legacy({ "Blocks", "Data" });
     truncated.resize(truncated.size() - 2);
     readers(truncated, directory, [](bfFile* input) {
-        unsigned char blocks;
+        unsigned short blocks;
         unsigned short data;
         assert(nbtGetSchematicBlocksAndData(input, 1, &blocks, &data) != 1);
     });
@@ -249,7 +249,7 @@ static void checkEntities(const std::string& directory)
     });
     // A shared budget also bounds repeated fields and unknown nested values.
     Bytes exhausted = entities();
-    for (int i = 0; i < 100001; i++) stringTag(exhausted, "id", "minecraft:pig");
+    for (int i = 0; i < 1000001; i++) stringTag(exhausted, "id", "minecraft:pig");
     stringTag(exhausted, "id", "minecraft:cushion"); position(exhausted);
     exhausted.push_back(0); exhausted.push_back(0);
     readers(exhausted, directory, [](bfFile* input) {
@@ -266,13 +266,88 @@ static void checkEntities(const std::string& directory)
     }
 }
 
+static void checkBiomeNamespaces()
+{
+    const std::string longest = "mod:" + std::string(95, 'a');
+    const std::string tooLong = longest + "a";
+    const struct { const char* name; int biome; } cases[] = {
+        { "minecraft:forest", 4 }, { "mod:forest", 4 }, { "mod:cave/forest", 4 },
+        { "biomeswevegone:allium_shrubland", 35 }, { "terralith:arid_highlands", 35 },
+        { "mod:a", 1 }, { longest.c_str(), 1 }, { tooLong.c_str(), -1 },
+        { "missing_namespace", -1 }, { "bad:?", -1 }, { "mod:a[bad=state]", -1 }
+    };
+    for (const auto& test : cases) {
+        const char* name = test.name;
+        Bytes bytes;
+        tag(bytes, 10, "");
+        tag(bytes, 9, "sections"); bytes.push_back(10); number(bytes, 1, 4);
+        tag(bytes, 1, "Y"); bytes.push_back(15);
+        tag(bytes, 10, "block_states");
+        tag(bytes, 9, "palette"); bytes.push_back(10); number(bytes, 1, 4);
+        stringTag(bytes, "Name", "minecraft:stone"); bytes.push_back(0); bytes.push_back(0);
+        tag(bytes, 10, "biomes");
+        tag(bytes, 9, "palette"); bytes.push_back(8); number(bytes, 1, 4);
+        number(bytes, strlen(name), 2); bytes.insert(bytes.end(), name, name + strlen(name));
+        bytes.push_back(0); bytes.push_back(0); bytes.push_back(0);
+        int offset = 0;
+        bfFile input = {};
+        input.type = BF_BUFFER;
+        input.buf = bytes.data();
+        input.buflen = (int)bytes.size();
+        input.offset = &offset;
+        {
+            std::vector<unsigned short> blocks(65536), data(65536);
+            std::vector<unsigned char> light(65536), biomes(256);
+            BlockEntity entities[NUM_BLOCK_ENTITIES];
+            int count = 0, filled = 0;
+            int result = nbtGetBlocks(&input, blocks.data(), data.data(), light.data(), biomes.data(),
+                entities, &count, 21, 0, 255, filled, nullptr, 7);
+            if (test.biome < 0) {
+                assert(result < 0); continue;
+            }
+            assert(result >= 0 && blocks[240 * 256] == BLOCK_STONE);
+            assert(biomes[0] == test.biome);
+        }
+    }
+}
+
+static void checkWorldMetadata(const std::string& directory)
+{
+    for (int count : { 230000, 1000001 }) {
+        Bytes bytes;
+        tag(bytes, 10, "");
+        tag(bytes, 10, "Data");
+        tag(bytes, 10, "WorldGenSettings");
+        tag(bytes, 9, "entries"); bytes.push_back(1); number(bytes, count, 4);
+        bytes.insert(bytes.end(), count, 0);
+        bytes.push_back(0);
+        tag(bytes, 3, "version"); number(bytes, 19133, 4);
+        tag(bytes, 3, "SpawnX"); number(bytes, 12, 4);
+        tag(bytes, 3, "SpawnY"); number(bytes, 70, 4);
+        tag(bytes, 3, "SpawnZ"); number(bytes, -9, 4);
+        bytes.push_back(0); bytes.push_back(0);
+        readers(bytes, directory, [count](bfFile* input) {
+            int version;
+            int result = nbtGetFileVersion(input, &version);
+            assert(count == 230000 ? result == 0 && version == 19133 : result != 0);
+        });
+        readers(bytes, directory, [count](bfFile* input) {
+            int x, y, z;
+            int result = nbtGetSpawn(input, &x, &y, &z);
+            assert(count == 230000 ? result == 0 && x == 12 && y == 70 && z == -9 : result != 0);
+        });
+    }
+}
+
 int main(int argc, char** argv)
 {
     assert(argc == 2 || argc == 3);
     const auto start = std::chrono::steady_clock::now();
+    if (argc == 2 || strcmp(argv[2], "biomes") == 0) checkBiomeNamespaces();
+    if (argc == 2 || strcmp(argv[2], "metadata") == 0) checkWorldMetadata(argv[1]);
     if (argc == 2 || strcmp(argv[2], "sponge") == 0) checkSponge(argv[1]);
     if (argc == 2 || strcmp(argv[2], "legacy") == 0) checkLegacy(argv[1]);
     if (argc == 2 || strcmp(argv[2], "entities") == 0) checkEntities(argv[1]);
     assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(10));
-    puts("PASS: Sponge v2/v3 indices and deferred fields, legacy tag completeness, bounded entity arrays, buffer/gzip readers");
+    puts("PASS: Sponge v2/v3 indices and deferred fields, legacy tag completeness, bounded world metadata and entity arrays, buffer/gzip readers");
 }

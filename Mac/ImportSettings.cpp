@@ -281,7 +281,7 @@ static bool CommandLoadTerrainFile(ImportedSet& is, wxString& error)
 
 static bool CommandLoadCullingScheme(ImportedSet& is, wxString& error)
 {
-    if (!SelectCullingSchemeByName(is.cullingScheme)) {
+    if (!SelectCullingSchemeByName(is.cullingScheme, !gMacHeadless)) {
         error = wxString::Format("Mineways attempted to load culling scheme \"%s\" but could not do so. Please select it from the menu manually.", is.cullingScheme);
         return false;
     }
@@ -319,7 +319,10 @@ static bool CommandExportFile(ImportedSet& is, wxString& error, int fileMode, co
         bool isSponge = fileName.Lower().EndsWith(".schem");
         efd->fileType = isSponge ? FILE_TYPE_SPONGE_SCHEMATIC : FILE_TYPE_SCHEMATIC;
     }
-    gFrame->RunExport(*efd, GetExportPathBuf());
+    if (!gFrame->RunExport(*efd, GetExportPathBuf())) {
+        error = "export failed.";
+        return false;
+    }
     return true;
 }
 
@@ -419,37 +422,37 @@ static int InterpretImportLine(char* line, ImportedSet& is)
         return INTERPRETER_FOUND_VALID_LINE | INTERPRETER_REDRAW_SCREEN;
     }
 
-    strPtr = FindLineDataNoCase(line, "View Overworld");
-    if (strPtr) {
+    strPtr = FindLineDataNoCase(line, "Mod pack:");
+    const char* clearData = FindLineDataNoCase(line, "Clear mod pack");
+    bool clearModPack = clearData != nullptr;
+    if (strPtr || clearModPack) {
+        if (clearModPack && *clearData) {
+            SaveErrorMessage(is, "Clear mod pack takes no arguments."); return INTERPRETER_FOUND_ERROR;
+        }
+        if (!clearModPack && !*strPtr) {
+            SaveErrorMessage(is, "no mod pack manifest given."); return INTERPRETER_FOUND_ERROR;
+        }
         if (is.processData && !is.readingModel) {
-            if (!IsLoaded()) { SaveErrorMessage(is, "attempt to view Overworld but no world is loaded."); return INTERPRETER_FOUND_ERROR; }
-            Options* opts = GetOptions();
-            if (opts->worldType & (HELL | ENDER)) {
-                if (opts->worldType & HELL) gFrame->SwitchToNether();   // toggles off since already Nether
-                else gFrame->SwitchToTheEnd();
+            wxString error;
+            if (!gFrame->SetModPack(clearModPack ? wxString() : wxString::FromUTF8(strPtr), clearModPack, error)) {
+                SaveErrorMessage(is, error); return INTERPRETER_FOUND_ERROR;
             }
         }
         return INTERPRETER_FOUND_VALID_LINE | INTERPRETER_REDRAW_SCREEN;
     }
 
-    strPtr = FindLineDataNoCase(line, "View Nether");
-    if (strPtr) {
-        if (is.processData) {
-            if (!is.readingModel) {
-                if (!IsLoaded()) { SaveErrorMessage(is, "attempt to view Nether but no world is loaded."); return INTERPRETER_FOUND_ERROR; }
-                if (!gFrame->SwitchToNether()) { SaveWarningMessage(is, "attempt to switch to Nether but this world has none."); return INTERPRETER_FOUND_VALID_LINE; }
-            }
+    strPtr = FindLineDataNoCase(line, "Dimension:");
+    const char* dimension = strPtr;
+    if (!dimension && FindLineDataNoCase(line, "View Overworld")) dimension = "minecraft:overworld";
+    if (!dimension && FindLineDataNoCase(line, "View Nether")) dimension = "minecraft:the_nether";
+    if (!dimension && FindLineDataNoCase(line, "View The End")) dimension = "minecraft:the_end";
+    if (dimension) {
+        if (!IsWorldDimensionId(dimension)) {
+            SaveErrorMessage(is, "invalid dimension ID."); return INTERPRETER_FOUND_ERROR;
         }
-        return INTERPRETER_FOUND_VALID_LINE | INTERPRETER_REDRAW_SCREEN;
-    }
-
-    strPtr = FindLineDataNoCase(line, "View The End");
-    if (strPtr) {
-        if (is.processData) {
-            if (!is.readingModel) {
-                if (!IsLoaded()) { SaveErrorMessage(is, "attempt to view The End but no world is loaded."); return INTERPRETER_FOUND_ERROR; }
-                if (!gFrame->SwitchToTheEnd()) { SaveWarningMessage(is, "attempt to switch to The End but this world has none."); return INTERPRETER_FOUND_VALID_LINE; }
-            }
+        if (is.processData && !is.readingModel &&
+            (!IsLoaded() || !gFrame->SwitchToDimension(wxString::FromUTF8(dimension)))) {
+            SaveErrorMessage(is, "dimension not found in the loaded world."); return INTERPRETER_FOUND_ERROR;
         }
         return INTERPRETER_FOUND_VALID_LINE | INTERPRETER_REDRAW_SCREEN;
     }

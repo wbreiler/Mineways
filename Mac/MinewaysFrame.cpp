@@ -2,25 +2,41 @@
 // Global state mirrors the static variables in Win/Mineways.cpp.
 #include <wx/wx.h>
 #include <wx/config.h>
+#include <wx/choicdlg.h>
 #include <wx/stdpaths.h>
 #include <wx/filename.h>
 #include <wx/progdlg.h>
+#include <wx/process.h>
 #include "MinewaysFrame.h"
 #include "MapPanel.h"
 #include "LocationDialog.h"
 #include "ExportDialog.h"
 #include "MacCullingSchemes.h"
 #include "ImportSettings.h"
+#include "ModSupport.h"
 
 // Win32 shims + project headers (stdafx.h routes to compat.h on non-WIN32)
 #include "stdafx.h"
 #include "CullingSchemes.h"   // applyCullingScheme/isBlockCulled declarations
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <new>
+#include <memory>
 #include <stdexcept>
 #include <sys/sysctl.h>
 #include <wx/scopeguard.h>
+
+bool gMacHeadless = false;
+
+static int ReportMessage(const wxString& message, const wxString& caption,
+                         long style, wxWindow* parent)
+{
+    if (!gMacHeadless) return wxMessageBox(message, caption, style, parent);
+    fprintf(stderr, "%s: %s\n", caption.utf8_str().data(), message.utf8_str().data());
+    return wxOK;
+}
 
 // ─── Globals (mirror of Win/Mineways.cpp static globals) ────────────────────
 #define MINZOOM 1.0f
@@ -51,6 +67,7 @@ static wchar_t     gWorldPathDefault[MAX_PATH_AND_FILE];
 static wchar_t     gPreferredSeparatorString[2] = { L'/', 0 };
 static int         gSpawnX = 0, gSpawnY = 64, gSpawnZ = 0;
 static int         gPlayerX = 0, gPlayerY = 64, gPlayerZ = 0;
+static char gPlayerDimension[256] = "minecraft:overworld";
 static int         gOverworldHideStatus = 0;   // HIDEOBSCURED bit, saved across a Nether visit
 static float       gMinZoom         = MINZOOM;
 
@@ -189,6 +206,9 @@ static void ExportProgressCB(float progress, wchar_t* buf)
 static void ClearLoadedWorldData()
 {
     CloseAll();
+    if (gOptions.worldType & HELL)
+        gOptions.worldType = (gOptions.worldType & ~HIDEOBSCURED) | gOverworldHideStatus;
+    gOptions.worldType &= ~(HELL | ENDER);
     free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
     free(gWorldGuide.sch.data);   gWorldGuide.sch.data   = nullptr;
     memset(&gWorldGuide, 0, sizeof(gWorldGuide));
@@ -201,7 +221,7 @@ static int LoadSchematicFile(const wchar_t* pathAndFile, bool isSponge)
 {
     if (isSponge) {
         int w = 0, h = 0, l = 0;
-        unsigned char* blocks = nullptr;
+        unsigned short* blocks = nullptr;
         unsigned short* data  = nullptr;
         int dataVersion = 0;
         int rv = GetSpongeSchematic(pathAndFile, &w, &h, &l, &blocks, &data, &dataVersion);
@@ -219,7 +239,7 @@ static int LoadSchematicFile(const wchar_t* pathAndFile, bool isSponge)
         if (GetSchematicWord(pathAndFile, "Length", &gWorldGuide.sch.length) != 1) return 103;
         if (!nbtGetValidatedSchematicVolume(gWorldGuide.sch.width, gWorldGuide.sch.height,
                                             gWorldGuide.sch.length, &gWorldGuide.sch.numBlocks)) return 104;
-        gWorldGuide.sch.blocks = (unsigned char*)malloc(gWorldGuide.sch.numBlocks);
+        gWorldGuide.sch.blocks = (unsigned short*)malloc((size_t)gWorldGuide.sch.numBlocks * sizeof(*gWorldGuide.sch.blocks));
         gWorldGuide.sch.data   = (unsigned short*)malloc(gWorldGuide.sch.numBlocks * sizeof(*gWorldGuide.sch.data));
         if (!gWorldGuide.sch.blocks || !gWorldGuide.sch.data) {
             free(gWorldGuide.sch.blocks); gWorldGuide.sch.blocks = nullptr;
@@ -292,6 +312,9 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_OPEN_FILE,        MinewaysFrame::OnOpenFile)
     EVT_MENU(ID_TEST_BLOCK_WORLD, MinewaysFrame::OnTestBlockWorld)
     EVT_MENU(ID_GO_TO_LOCATION,   MinewaysFrame::OnGoToLocation)
+    EVT_MENU(ID_LOAD_MOD_PACK, MinewaysFrame::OnLoadModPack)
+    EVT_MENU(ID_CHOOSE_MODPACK_FOLDER, MinewaysFrame::OnChooseModpackFolder)
+    EVT_MENU(ID_CLEAR_MOD_PACK, MinewaysFrame::OnClearModPack)
     EVT_MENU(ID_CHOOSE_TERRAIN,   MinewaysFrame::OnChooseTerrainFile)
     EVT_MENU(ID_DEFAULT_TERRAIN,  MinewaysFrame::OnDefaultTerrain)
     EVT_MENU_RANGE(ID_TERRAIN_ITEM_BASE, ID_TERRAIN_ITEM_BASE + MAX_TERRAIN_FILES - 1,
@@ -309,6 +332,7 @@ wxBEGIN_EVENT_TABLE(MinewaysFrame, wxFrame)
     EVT_MENU(ID_VIEW_INFORMATION, MinewaysFrame::OnViewInformation)
     EVT_MENU(ID_VIEW_HELL,        MinewaysFrame::OnViewHell)
     EVT_MENU(ID_VIEW_END,         MinewaysFrame::OnViewEnd)
+    EVT_MENU(ID_CHOOSE_DIMENSION, MinewaysFrame::OnChooseDimension)
     EVT_MENU(ID_SHOWALL,          MinewaysFrame::OnToggleWorldTypeBit)
     EVT_MENU(ID_SHOWBIOMES,       MinewaysFrame::OnToggleWorldTypeBit)
     EVT_MENU(ID_ELEVATION_SHADING, MinewaysFrame::OnToggleWorldTypeBit)
@@ -364,24 +388,26 @@ MinewaysFrame::MinewaysFrame(wxWindow* parent)
     // Export defaults, matching Windows' "Export for Rendering" preset
     InitViewExportData(gEfd);
 
-    // Restore persisted settings
-    wxConfig cfg("Mineways");
-    long memory = cfg.ReadLong("mapMemoryMB", 2048);
-    if (memory == 1024 || memory == 2048 || memory == 4096 || memory == 8192 || memory == 16384)
-        m_mapMemoryMB = (int)memory;
-    wxString cfgTerrain, cfgSaves, cfgExportPath;
-    if (cfg.Read("terrainPath", &cfgTerrain) && wxFileExists(cfgTerrain))
-        terrainPath = cfgTerrain;
-    if (cfg.Read("savesDir", &cfgSaves))
-        savesDir = cfgSaves;
-    if (cfg.Read("exportPath", &cfgExportPath))
-        _mwUtf8ToWideBuffer(cfgExportPath.utf8_str(), gExportPath, 4096);
-    LoadExportFileData(gEfd);   // falls back to the InitViewExportData preset above if absent/stale
-    LoadRecentExportsFromConfig();
-    gCurX = cfg.ReadDouble("curX", 0.0);
-    gCurZ = cfg.ReadDouble("curZ", 0.0);
-    gCurScale = cfg.ReadDouble("curScale", 1.0);
-    if (!std::isfinite(gCurScale) || gCurScale < 0.01) gCurScale = 1.0;
+    if (!gMacHeadless) {
+        // Restore persisted settings
+        wxConfig cfg("Mineways");
+        long memory = cfg.ReadLong("mapMemoryMB", 2048);
+        if (memory == 1024 || memory == 2048 || memory == 4096 || memory == 8192 || memory == 16384)
+            m_mapMemoryMB = (int)memory;
+        wxString cfgTerrain, cfgSaves, cfgExportPath;
+        if (cfg.Read("terrainPath", &cfgTerrain) && wxFileExists(cfgTerrain))
+            terrainPath = cfgTerrain;
+        if (cfg.Read("savesDir", &cfgSaves))
+            savesDir = cfgSaves;
+        if (cfg.Read("exportPath", &cfgExportPath))
+            _mwUtf8ToWideBuffer(cfgExportPath.utf8_str(), gExportPath, 4096);
+        LoadExportFileData(gEfd);   // falls back to the InitViewExportData preset above if absent/stale
+        LoadRecentExportsFromConfig();
+        gCurX = cfg.ReadDouble("curX", 0.0);
+        gCurZ = cfg.ReadDouble("curZ", 0.0);
+        gCurScale = cfg.ReadDouble("curScale", 1.0);
+        if (!std::isfinite(gCurScale) || gCurScale < 0.01) gCurScale = 1.0;
+    }
 
     if (!_mwUtf8ToWideBuffer(terrainPath.utf8_str(), gSelectTerrainPathAndName, MAX_PATH_AND_FILE))
         gSelectTerrainPathAndName[0] = L'\0';
@@ -439,15 +465,17 @@ MinewaysFrame::~MinewaysFrame()
 {
     if (m_mapPanel) m_mapPanel->PauseLoading();
     ClearLoadedWorldData();
-    // Persist settings to plist via wxConfig
-    wxConfig cfg("Mineways");
-    cfg.Write("terrainPath", wxString(gSelectTerrainPathAndName));
-    cfg.Write("savesDir", wxString(gWorldPathDefault));
-    if (gExportPath[0]) cfg.Write("exportPath", wxString(gExportPath));
-    SaveExportFileData(gEfd);
-    cfg.Write("curX",     gCurX);
-    cfg.Write("curZ",     gCurZ);
-    cfg.Write("curScale", gCurScale);
+    if (!gMacHeadless) {
+        // Persist settings to plist via wxConfig
+        wxConfig cfg("Mineways");
+        cfg.Write("terrainPath", wxString(gSelectTerrainPathAndName));
+        cfg.Write("savesDir", wxString(gWorldPathDefault));
+        if (gExportPath[0]) cfg.Write("exportPath", wxString(gExportPath));
+        SaveExportFileData(gEfd);
+        cfg.Write("curX",     gCurX);
+        cfg.Write("curZ",     gCurZ);
+        cfg.Write("curScale", gCurScale);
+    }
 
     gFrame = nullptr;
     free(gMapBits);
@@ -551,6 +579,8 @@ void MinewaysFrame::BuildMenu()
 
     fileMenu->Append(ID_OPEN_FILE,  "Open level.dat or Schematic...\tCtrl+O",
                      "Open a level.dat or .schematic/.schem file");
+    fileMenu->Append(ID_CHOOSE_MODPACK_FOLDER, "Choose Modpack Folder…",
+                     "Prepare an installed modpack and open one of its worlds");
     fileMenu->Append(ID_GO_TO_LOCATION, "Go To Location...\tCtrl+G",
                      "Jump map view to a specific X,Z coordinate");
     // "Choose Terrain File" submenu: [default] + any terrainExt*.png packs found
@@ -582,6 +612,9 @@ void MinewaysFrame::BuildMenu()
     fileMenu->Append(ID_EXPORT_MAP, "Export Map...\tCtrl+M",
                      "Save the selected region of the 2D map as a PNG image");
     fileMenu->AppendSeparator();
+    fileMenu->Append(ID_LOAD_MOD_PACK, "Load Mod Pack...");
+    fileMenu->Append(ID_CLEAR_MOD_PACK, "Clear Mod Pack");
+    fileMenu->AppendSeparator();
     fileMenu->Append(wxID_EXIT, "Quit\tCtrl+Q");
 
     wxMenu* viewMenu = new wxMenu;
@@ -597,6 +630,7 @@ void MinewaysFrame::BuildMenu()
     viewMenu->AppendSeparator();
     viewMenu->AppendCheckItem(ID_VIEW_HELL, "View Nether\tF5");
     viewMenu->AppendCheckItem(ID_VIEW_END,  "View The End\tF6");
+    viewMenu->Append(ID_CHOOSE_DIMENSION, "Dimensions...");
     viewMenu->AppendSeparator();
     viewMenu->AppendCheckItem(ID_SHOWALL,    "Show all objects\tF7");
     viewMenu->AppendCheckItem(ID_SHOWBIOMES, "Show biomes\tF8");
@@ -838,7 +872,7 @@ void MinewaysFrame::SetTerrainFile(const wxString& path)
 {
     wchar_t terrainPath[MAX_PATH_AND_FILE];
     if (!_mwUtf8ToWideBuffer(path.utf8_str(), terrainPath, MAX_PATH_AND_FILE)) {
-        wxMessageBox("The terrain file path is invalid or too long.", "Terrain file error",
+        ReportMessage("The terrain file path is invalid or too long.", "Terrain file error",
                      wxOK | wxICON_ERROR, this);
         return;
     }
@@ -978,14 +1012,14 @@ static int BuildExportFlags(const ExportFileData& e, wxWindow* parent)
         int unsupported = EXPT_OUTPUT_MATERIALS | EXPT_OUTPUT_TEXTURE_SWATCHES | EXPT_OUTPUT_TEXTURE_IMAGES |
                           EXPT_OUTPUT_SEPARATE_TEXTURE_TILES | EXPT_OUTPUT_OBJ_MTL_PER_TYPE | EXPT_DEBUG_SHOW_GROUPS | EXPT_DEBUG_SHOW_WELDS;
         if (flags & unsupported)
-            wxMessageBox("Color output is not supported for ASCII STL; file will contain no colors.",
+            ReportMessage("Color output is not supported for ASCII STL; file will contain no colors.",
                         "Informational", wxOK | wxICON_INFORMATION, parent);
         flags &= ~unsupported;
         flags &= ~EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
     } else if (ft == FILE_TYPE_BINARY_MAGICS_STL || ft == FILE_TYPE_BINARY_VISCAM_STL) {
         int unsupported = EXPT_OUTPUT_TEXTURE_SWATCHES | EXPT_OUTPUT_TEXTURE_IMAGES | EXPT_OUTPUT_SEPARATE_TEXTURE_TILES;
         if (flags & unsupported)
-            wxMessageBox("Texture output is not supported for binary STL; file will contain solid colors instead.",
+            ReportMessage("Texture output is not supported for binary STL; file will contain solid colors instead.",
                         "Informational", wxOK | wxICON_INFORMATION, parent);
         flags &= ~unsupported;
         flags &= ~EXPT_OUTPUT_OBJ_MTL_PER_TYPE;
@@ -1037,7 +1071,7 @@ void MinewaysFrame::OnExportOBJ(wxCommandEvent&)
 
 // Shared by OnExportOBJ (after the dialog returns OK) and OnRepeatExport/Ctrl+X
 // (reuses the last-used efd/path without reopening the dialog).
-void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
+bool MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
 {
     m_mapPanel->PauseLoading();
     wxON_BLOCK_EXIT_OBJ0(*m_mapPanel, MapPanel::ResumeLoading);
@@ -1060,9 +1094,9 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
     wchar_t curDir[MAX_PATH_AND_FILE];
     wxFileName exeFN(wxStandardPaths::Get().GetExecutablePath());
     if (!_mwUtf8ToWideBuffer(exeFN.GetPath().utf8_str(), curDir, MAX_PATH_AND_FILE)) {
-        wxMessageBox("The application resource path is invalid or too long.", "Export failed",
+        ReportMessage("The application resource path is invalid or too long.", "Export failed",
                      wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Biome/group state
@@ -1075,11 +1109,11 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
         wxString probePrefix = outputFileName.GetPathWithSep() + ".mineways-write-test-";
         wxString probePath = wxFileName::CreateTempFileName(probePrefix);
         if (probePath.empty()) {
-            wxMessageBox(wxString::Format(
+            ReportMessage(wxString::Format(
                 "Cannot create a file in the export directory — check the path and permissions.\nDirectory: %s",
                 outputFileName.GetPath()),
                 "Export pre-check failed", wxOK | wxICON_ERROR, this);
-            return;
+            return false;
         }
         wxRemoveFile(probePath);
     }
@@ -1094,9 +1128,12 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
     // mid-export cancellation mechanism in the underlying export code.
     gExportProgressLastValue = 0;
     gExportProgressLastMsg = "Exporting...";
-    wxProgressDialog progressDlg("Exporting", gExportProgressLastMsg, 100, this,
-                                 wxPD_APP_MODAL | wxPD_ELAPSED_TIME | wxPD_AUTO_HIDE);
-    gExportProgressDlg = &progressDlg;
+    std::unique_ptr<wxProgressDialog> progressDlg;
+    if (!gMacHeadless) {
+        progressDlg.reset(new wxProgressDialog("Exporting", gExportProgressLastMsg, 100, this,
+                                  wxPD_APP_MODAL | wxPD_ELAPSED_TIME | wxPD_AUTO_HIDE));
+    }
+    gExportProgressDlg = progressDlg.get();
 
     int errCode = SaveVolume((wchar_t*)outputPath, efd.fileType,
         &gOptions, &gWorldGuide, curDir,
@@ -1116,7 +1153,7 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
         // Codes in this range (e.g. MW_NO_BLOCKS_FOUND, MW_ALL_BLOCKS_DELETED) mean
         // SaveVolume deliberately wrote nothing — not an error, but not success either.
         // Mirrors Win/Mineways.cpp's `errCode < MW_BEGIN_NOTHING_TO_DO` success gate.
-        wxMessageBox("No file was written: nothing exportable was found in the selected region.",
+        ReportMessage("No file was written: nothing exportable was found in the selected region.",
                      "Nothing exported", wxOK | wxICON_WARNING, this);
     } else if (errCode == MW_NO_ERROR || errCode < MW_BEGIN_ERRORS) {
         // Build message before freeing the list
@@ -1130,7 +1167,7 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
         } else {
             msg += "\n(expected: " + wxString(outputPath) + ")";
         }
-        wxMessageBox(msg, "Export done", wxOK | wxICON_INFORMATION, this);
+        ReportMessage(msg, "Export done", wxOK | wxICON_INFORMATION, this);
 
         // Issue #138 parity: record successful model exports in the Recent Exports menu.
         // Use the first actually-written file so the recorded path has the on-disk suffix
@@ -1140,15 +1177,22 @@ void MinewaysFrame::RunExport(ExportFileData& efd, const wchar_t* outputPath)
         } else {
             AddToRecentExports(wxString(outputPath));
         }
+    } else if ((errCode & (MW_CANNOT_PARSE_IMPORT_FILE | MW_WORLD_EXPORT_TOO_LARGE)) && *ModExportError()) {
+        ReportMessage(wxString::FromUTF8(ModExportError()), "Export error", wxOK | wxICON_ERROR, this);
+    } else if (errCode == MW_CANNOT_PARSE_IMPORT_FILE && efd.fileType == FILE_TYPE_SCHEMATIC &&
+               ModBlockTypeLimit() > NUM_BLOCKS_DEFINED) {
+        ReportMessage("Mod blocks need Sponge .schem to preserve names and states. Choose Sponge schematic or clear the mod pack.",
+                     "Export error", wxOK | wxICON_ERROR, this);
     } else {
         // Show path even on failure so user can diagnose
-        wxMessageBox(wxString::Format("Export failed (error %d).\nAttempted path: %s",
+        ReportMessage(wxString::Format("Export failed (error %d).\nAttempted path: %s",
                      errCode, wxString(outputPath)),
                      "Export error", wxOK | wxICON_ERROR, this);
     }
 
     // Free file list
     for (int i = 0; i < outputFileList.count; i++) free(outputFileList.name[i]);
+    return errCode < MW_BEGIN_NOTHING_TO_DO;
 }
 
 void MinewaysFrame::OnQuit(wxCommandEvent&) { Close(true); }
@@ -1237,7 +1281,7 @@ void MinewaysFrame::PopulateRecentExportsMenu()
 // addToRecentExports.
 void MinewaysFrame::AddToRecentExports(const wxString& path)
 {
-    if (path.IsEmpty()) return;
+    if (gMacHeadless || path.IsEmpty()) return;
 
     for (int i = 0; i < gRecentExportCount; i++) {
         if (gRecentExports[i].CmpNoCase(path) == 0) {
@@ -1308,7 +1352,13 @@ void MinewaysFrame::OnReloadWorld(wxCommandEvent&)
         wxMessageBox("You need to load a world first.", "No world loaded", wxOK | wxICON_INFORMATION, this);
         return;
     }
+    wxString dimension(gWorldGuide.dimensionId);
+    double oldX = gCurX, oldZ = gCurZ;
     wxString err = LoadWorldFromDir(wxString(gWorldGuide.world));
+    if (err.IsEmpty() && !dimension.IsEmpty() && SwitchToDimension(dimension)) {
+        gCurX = oldX; gCurZ = oldZ;
+        RedrawMap();
+    }
     if (!err.IsEmpty()) wxMessageBox(err, "Load error", wxOK | wxICON_ERROR, this);
 }
 
@@ -1501,16 +1551,16 @@ void MinewaysFrame::OnUndoSelection(wxCommandEvent&)
 void MinewaysFrame::JumpToSpawn()
 {
     if (!gLoaded) return;
-    gCurX = gSpawnX; gCurZ = gSpawnZ;
-    if (gOptions.worldType & HELL) { gCurX /= 8.0; gCurZ /= 8.0; }
+    gCurX = ConvertDimensionCoordinate(gSpawnX, gWorldGuide.type == WORLD_LEVEL_TYPE ? DimensionCoordinateScale("minecraft:overworld") : 1.0, WorldDimensionScale(&gWorldGuide, gOptions.worldType));
+                gCurZ = ConvertDimensionCoordinate(gSpawnZ, gWorldGuide.type == WORLD_LEVEL_TYPE ? DimensionCoordinateScale("minecraft:overworld") : 1.0, WorldDimensionScale(&gWorldGuide, gOptions.worldType));
     RedrawMap();
 }
 
 void MinewaysFrame::JumpToPlayer()
 {
     if (!gLoaded) return;
-    gCurX = gPlayerX; gCurZ = gPlayerZ;
-    if (gOptions.worldType & HELL) { gCurX /= 8.0; gCurZ /= 8.0; }
+    gCurX = ConvertDimensionCoordinate(gPlayerX, gWorldGuide.type == WORLD_LEVEL_TYPE ? DimensionCoordinateScale(gPlayerDimension) : 1.0, WorldDimensionScale(&gWorldGuide, gOptions.worldType));
+    gCurZ = ConvertDimensionCoordinate(gPlayerZ, gWorldGuide.type == WORLD_LEVEL_TYPE ? DimensionCoordinateScale(gPlayerDimension) : 1.0, WorldDimensionScale(&gWorldGuide, gOptions.worldType));
     RedrawMap();
 }
 
@@ -1525,7 +1575,6 @@ bool MinewaysFrame::JumpToModel()
     if (!on) return false;
     gCurX = (minx + maxx) / 2;
     gCurZ = (minz + maxz) / 2;
-    if (gOptions.worldType & HELL) { gCurX /= 8.0; gCurZ /= 8.0; }
     RedrawMap();
     return true;
 }
@@ -1575,72 +1624,306 @@ void MinewaysFrame::OnViewInformation(wxCommandEvent&)
     wxMessageBox(info, "World Information", wxOK | wxICON_INFORMATION, this);
 }
 
-// Both Nether and End views reuse the same world's chunk loader with the HELL/ENDER
-// worldType bits set — MinewaysMap.cpp's directory-building already picks the DIM-1/DIM1
-// subfolder from those bits, so this is state bookkeeping, not new chunk-loading logic.
-bool MinewaysFrame::SwitchToNether()
+bool MinewaysFrame::SetModPack(const wxString& path, bool clear, wxString& error)
 {
-    if (gWorldGuide.type == WORLD_SCHEMATIC_TYPE || gWorldGuide.type == WORLD_TEST_BLOCK_TYPE) return false;
-    if (!(gOptions.worldType & HELL)) {
-        gOptions.worldType |= HELL;
-        gOptions.worldType &= ~ENDER;
-        gCurX /= 8.0; gCurZ /= 8.0;
-        if (gCurDepth == gMaxHeight) {
-            gCurDepth = 126;
-            if (m_sliderTop) { m_sliderTop->SetValue(gCurDepth); m_labelTop->SetLabel(wxString::Format("%d", gCurDepth)); }
-        }
-        gOverworldHideStatus = gOptions.worldType & HIDEOBSCURED;
-        gOptions.worldType |= HIDEOBSCURED;
-    } else {
-        gCurX *= 8.0; gCurZ *= 8.0;
-        if (gCurDepth == 126) {
-            gCurDepth = gMaxHeight;
-            if (m_sliderTop) { m_sliderTop->SetValue(gCurDepth); m_labelTop->SetLabel(wxString::Format("%d", gCurDepth)); }
-        }
-        gOptions.worldType &= ~HIDEOBSCURED;
-        gOptions.worldType |= gOverworldHideStatus;
-        gOptions.worldType &= ~HELL;
+    if (gWorldGuide.type == WORLD_SCHEMATIC_TYPE) {
+        error = "Open a world or the Block Test World before changing mod packs. Reload the schematic after the pack changes.";
+        return false;
+    }
+    if (m_mapPanel) m_mapPanel->ResetMap();
+    ChunkLoaderStop();
+    std::string detail;
+    bool loaded = clear || LoadModPack(std::string(path.utf8_str()), detail);
+    if (clear) ClearModPack();
+    if (!loaded) {
+        error = wxString::FromUTF8(detail);
+        RedrawMap();
+        return false;
     }
     CloseAll();
+    SetMapPremultipliedColors(0);
+    InvalidateMapRenderCache();
+    CheckUnknownBlock(true);
+    ClearBlockReadCheck();
+    if (!(gWorldGuide.type == WORLD_LEVEL_TYPE && gWorldGuide.dimensionId[0] &&
+          SwitchToDimension(wxString(gWorldGuide.dimensionId))))
+        RedrawMap();
+    return true;
+}
+
+void MinewaysFrame::OnLoadModPack(wxCommandEvent&)
+{
+    wxFileDialog dialog(this, "Load Mod Pack", "", "", "Mod pack manifest (*.mwpack)|*.mwpack", wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dialog.ShowModal() != wxID_OK) return;
+    wxString error;
+    if (!SetModPack(dialog.GetPath(), false, error))
+        wxMessageBox(error, "Mod pack", wxOK | wxICON_ERROR, this);
+    else
+        SetStatusText("Loaded mod pack: " + dialog.GetPath(), 0);
+}
+
+static bool ResolveModpackInstance(const wxString& selected, wxString& game, wxString& saves)
+{
+    namespace fs = std::filesystem;
+    std::error_code error;
+    const fs::path root = fs::u8path(std::string(selected.utf8_str()));
+    for (const char* suffix : { "", ".minecraft", "minecraft" }) {
+        fs::path candidate = fs::canonical(root / suffix, error);
+        if (error || !fs::is_directory(candidate / "mods", error) ||
+            !fs::is_directory(candidate / "saves", error)) continue;
+        fs::path resolvedSaves = fs::canonical(candidate / "saves", error);
+        if (error) continue;
+        game = wxString::FromUTF8(candidate.u8string());
+        saves = wxString::FromUTF8(resolvedSaves.u8string());
+        return true;
+    }
+    return false;
+}
+
+static bool ModpackWorldInSaves(const wxString& selected, const wxString& saves, wxString& world)
+{
+    namespace fs = std::filesystem;
+    std::error_code error;
+    fs::path candidate = fs::canonical(fs::u8path(std::string(selected.utf8_str())), error);
+    if (error || !fs::is_directory(candidate, error) ||
+        !fs::is_regular_file(candidate / "level.dat", error)) return false;
+    fs::path parent = fs::canonical(fs::u8path(std::string(saves.utf8_str())), error);
+    if (error || candidate.parent_path() != parent) return false;
+    world = wxString::FromUTF8(candidate.u8string());
+    return true;
+}
+
+static bool ModpackWorldReadable(const wxString& world)
+{
+    wchar_t directory[MAX_PATH_AND_FILE], opened[MAX_PATH_AND_FILE];
+    if (!_mwUtf8ToWideBuffer(world.utf8_str(), directory, MAX_PATH_AND_FILE)) return false;
+    int version = 0;
+    return GetFileVersion(directory, &version, opened, MAX_PATH_AND_FILE) == 0;
+}
+
+static bool ReadPreparedModpack(const wxString& result, wxString& manifest, wxString& error)
+{
+    std::ifstream stream(std::filesystem::u8path(std::string(result.utf8_str())), std::ios::binary);
+    char buffer[4097];
+    stream.read(buffer, sizeof(buffer));
+    const std::string value(buffer, (size_t)stream.gcount());
+    if (value.empty() || value.size() > 4096 || value.find('\0') != std::string::npos ||
+        value.find('\n') != std::string::npos || value.find('\r') != std::string::npos) {
+        error = "The modpack helper returned an invalid result.";
+        return false;
+    }
+    manifest = wxString::FromUTF8(value);
+    if (manifest.empty() || std::string(manifest.utf8_str()) != value) {
+        error = "The modpack helper returned an invalid UTF-8 path.";
+        return false;
+    }
+    if (manifest == "VANILLA") return true;
+    std::error_code ec;
+    const auto path = std::filesystem::u8path(value);
+    if (!path.is_absolute() || !std::filesystem::is_regular_file(path, ec)) {
+        error = "The modpack helper did not return an existing absolute manifest path.";
+        return false;
+    }
+    return true;
+}
+
+class ModpackPrepareProcess : public wxProcess {
+public:
+    bool finished = false;
+    int status = -1;
+    void OnTerminate(int, int exitCode) override { status = exitCode; finished = true; }
+};
+
+static void ReadModpackDiagnostic(wxInputStream* stream, std::string& text)
+{
+    char buffer[4096];
+    while (stream && stream->CanRead()) {
+        stream->Read(buffer, sizeof(buffer));
+        const size_t count = stream->LastRead();
+        if (!count) break;
+        text.append(buffer, count);
+        // Keep the last diagnostic while draining all output, so a full pipe cannot stop the helper.
+        if (text.size() > 16384) text.erase(0, text.size() - 16384);
+    }
+}
+
+void MinewaysFrame::OnChooseModpackFolder(wxCommandEvent&)
+{
+    if (gWorldGuide.type == WORLD_SCHEMATIC_TYPE) {
+        wxMessageBox("Open a world or the Block Test World before changing mod packs. Reload the schematic after the pack changes.",
+                     "Modpack", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+    wxDirDialog instanceDialog(this, "Choose a Prism or CurseForge modpack instance", "",
+                               wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+    if (instanceDialog.ShowModal() != wxID_OK) {
+        SetStatusText("Modpack selection canceled", 0);
+        return;
+    }
+    wxString game, saves;
+    if (!ResolveModpackInstance(instanceDialog.GetPath(), game, saves)) {
+        wxMessageBox("Choose an instance with mods and saves folders. You can also select its minecraft or .minecraft folder.",
+                     "Modpack folder", wxOK | wxICON_ERROR, this);
+        return;
+    }
+    wxDirDialog worldDialog(this, "Choose a world from this modpack's saves folder", saves,
+                            wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+    if (worldDialog.ShowModal() != wxID_OK) {
+        SetStatusText("Modpack world selection canceled", 0);
+        return;
+    }
+    wxString world;
+    if (!ModpackWorldInSaves(worldDialog.GetPath(), saves, world)) {
+        wxMessageBox("Choose a world directly inside this instance's saves folder. The folder must contain level.dat.",
+                     "Modpack world", wxOK | wxICON_ERROR, this);
+        return;
+    }
+    wxFileName package(wxStandardPaths::Get().GetExecutablePath());
+    wxString helper;
+    if (package.GetDirs().Last() == "MacOS") {
+        package.RemoveLastDir();
+        helper = package.GetPathWithSep() + "Resources/tools/prepare_modpack.command";
+        package.RemoveLastDir();
+        package.RemoveLastDir();
+    }
+    if (helper.empty() || !wxFileExists(helper))
+        helper = package.GetPathWithSep() + "tools/prepare_modpack.command";
+    if (!wxFileExists(helper)) {
+        wxMessageBox("The modpack preparation tool is missing. Extract a fresh copy of the complete Mineways download and open the app again.",
+                     "Modpack preparation", wxOK | wxICON_ERROR, this);
+        return;
+    }
+    const wxString result = wxFileName::CreateTempFileName("mineways-modpack-");
+    if (result.empty()) {
+        wxMessageBox("Could not create a temporary result file.", "Modpack preparation", wxOK | wxICON_ERROR, this);
+        return;
+    }
+    wxON_BLOCK_EXIT1(wxRemoveFile, result);
+    ModpackPrepareProcess process;
+    process.Redirect();
+    const wchar_t* const argv[] = { helper.wc_str(), game.wc_str(), world.wc_str(), result.wc_str(), nullptr };
+    const long pid = wxExecute(argv, wxEXEC_ASYNC | wxEXEC_MAKE_GROUP_LEADER, &process);
+    if (pid == 0) {
+        wxMessageBox("Could not start the modpack preparation helper.", "Modpack preparation", wxOK | wxICON_ERROR, this);
+        return;
+    }
+    process.CloseOutput();
+    std::string output, diagnostic;
+    bool canceled = false;
+    {
+        wxProgressDialog progress("Preparing modpack", "Preparing models and textures. The first import can take several minutes.",
+                                  100, this, wxPD_APP_MODAL | wxPD_ELAPSED_TIME | wxPD_CAN_ABORT);
+        while (!process.finished) {
+            ReadModpackDiagnostic(process.GetInputStream(), output);
+            ReadModpackDiagnostic(process.GetErrorStream(), diagnostic);
+            if (!progress.Pulse() && !canceled) {
+                canceled = true;
+                wxProcess::Kill((int)pid, wxSIGKILL, wxKILL_CHILDREN);
+            }
+            wxTheApp->Yield(true);
+            wxMilliSleep(20);
+        }
+        ReadModpackDiagnostic(process.GetInputStream(), output);
+        ReadModpackDiagnostic(process.GetErrorStream(), diagnostic);
+    }
+    if (canceled) {
+        SetStatusText("Modpack preparation canceled. The current world is unchanged.", 0);
+        return;
+    }
+    wxString error, manifest;
+    if (process.status != 0) {
+        error = wxString::FromUTF8(diagnostic.empty() ? output : diagnostic);
+        if (error.empty()) error = wxString::Format("The preparation helper exited with status %d.", process.status);
+    } else if (ReadPreparedModpack(result, manifest, error)) {
+        if (!ModpackWorldReadable(world))
+            error = "The selected world's level.dat could not be read. The current world and modpack are unchanged.";
+        else if (SetModPack(manifest, manifest == "VANILLA", error)) error = LoadWorldFromDir(world);
+    }
+    if (!error.empty()) wxMessageBox(error, "Modpack preparation", wxOK | wxICON_ERROR, this);
+}
+
+void MinewaysFrame::OnClearModPack(wxCommandEvent&)
+{
+    wxString error;
+    if (!SetModPack("", true, error))
+        wxMessageBox(error, "Mod pack", wxOK | wxICON_ERROR, this);
+    else
+        SetStatusText("Mod pack cleared", 0);
+}
+
+bool MinewaysFrame::SwitchToDimension(const wxString& id)
+{
+    if (!gLoaded || gWorldGuide.type != WORLD_LEVEL_TYPE) return false;
+    const bool wasNether = (gOptions.worldType & HELL) != 0;
+    double oldScale = WorldDimensionScale(&gWorldGuide, gOptions.worldType);
+    bool sameDimension = id == wxString(gWorldGuide.dimensionId);
+    if (!SelectWorldDimension(&gWorldGuide, id.wc_str(), &gOptions.worldType)) return false;
+    if (m_mapPanel) m_mapPanel->ResetMap();
+    const bool isNether = (gOptions.worldType & HELL) != 0;
+    if (!sameDimension) {
+        gCurX = ConvertDimensionCoordinate(gCurX, oldScale, gWorldGuide.dimensionScale);
+        gCurZ = ConvertDimensionCoordinate(gCurZ, oldScale, gWorldGuide.dimensionScale);
+    }
+    if (wasNether != isNether) {
+        if (isNether) {
+            gOverworldHideStatus = gOptions.worldType & HIDEOBSCURED;
+            gOptions.worldType |= HIDEOBSCURED;
+        } else {
+            gOptions.worldType = (gOptions.worldType & ~HIDEOBSCURED) | gOverworldHideStatus;
+        }
+    }
+    gMinHeight = gWorldGuide.minHeight;
+    gMaxHeight = gWorldGuide.maxHeight;
+    GetChunkHeights(&gWorldGuide, gMinHeight, gMaxHeight, gMinecraftVersion, (int)gCurX, (int)gCurZ);
+    gCurDepth = isNether ? (std::max)(gMinHeight, (std::min)(126, gMaxHeight)) : gMaxHeight;
+    gTargetDepth = gMinHeight;
     gHighlightOn = FALSE;
-    SetHighlightState(gHighlightOn, 0, 0, 0, 0, 0, 0, gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_CLEAR);
+    SetHighlightState(0, 0, 0, 0, 0, 0, 0, gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_CLEAR);
+    if (m_sliderTop) {
+        m_sliderTop->SetRange(gMinHeight, gMaxHeight);
+        m_sliderTop->SetValue(gCurDepth);
+        m_labelTop->SetLabel(wxString::Format("%d", gCurDepth));
+        m_sliderBot->SetRange(gMinHeight, gMaxHeight);
+        m_sliderBot->SetValue(gTargetDepth);
+        m_labelBot->SetLabel(wxString::Format("%d", gTargetDepth));
+    }
     if (GetMenuBar()) {
-        GetMenuBar()->Check(ID_VIEW_HELL, (gOptions.worldType & HELL) != 0);
-        GetMenuBar()->Check(ID_VIEW_END,  (gOptions.worldType & ENDER) != 0);
+        GetMenuBar()->Check(ID_VIEW_HELL, isNether);
+        GetMenuBar()->Check(ID_VIEW_END, (gOptions.worldType & ENDER) != 0);
         GetMenuBar()->Check(ID_HIDEOBSCURED, (gOptions.worldType & HIDEOBSCURED) != 0);
     }
+    SetStatusText(wxString::Format("Dimension: %s", id), 0);
     RedrawMap();
     return true;
 }
 
+bool MinewaysFrame::SwitchToNether()
+{
+    return SwitchToDimension((gOptions.worldType & HELL) ? "minecraft:overworld" : "minecraft:the_nether");
+}
+
 bool MinewaysFrame::SwitchToTheEnd()
 {
-    if (gWorldGuide.type == WORLD_SCHEMATIC_TYPE || gWorldGuide.type == WORLD_TEST_BLOCK_TYPE) return false;
-    if (!(gOptions.worldType & ENDER)) {
-        gOptions.worldType |= ENDER;
-        if (gOptions.worldType & HELL) {
-            gCurX *= 8.0; gCurZ *= 8.0;
-            if (gCurDepth == 126) {
-                gCurDepth = gMaxHeight;
-                if (m_sliderTop) { m_sliderTop->SetValue(gCurDepth); m_labelTop->SetLabel(wxString::Format("%d", gCurDepth)); }
-            }
-            gOptions.worldType &= ~HIDEOBSCURED;
-            gOptions.worldType |= gOverworldHideStatus;
-            gOptions.worldType &= ~HELL;
-        }
-    } else {
-        gOptions.worldType &= ~ENDER;
+    return SwitchToDimension((gOptions.worldType & ENDER) ? "minecraft:overworld" : "minecraft:the_end");
+}
+
+void MinewaysFrame::OnChooseDimension(wxCommandEvent&)
+{
+    auto dimensions = DiscoverWorldDimensions(&gWorldGuide);
+    if (dimensions.empty()) {
+        wxMessageBox("Load a world with region files first.", "Dimensions", wxOK | wxICON_INFORMATION, this);
+        return;
     }
-    CloseAll();
-    gHighlightOn = FALSE;
-    SetHighlightState(gHighlightOn, 0, 0, 0, 0, 0, 0, gMinHeight, gMaxHeight, HIGHLIGHT_UNDO_CLEAR);
-    if (GetMenuBar()) {
-        GetMenuBar()->Check(ID_VIEW_HELL, (gOptions.worldType & HELL) != 0);
-        GetMenuBar()->Check(ID_VIEW_END,  (gOptions.worldType & ENDER) != 0);
-        GetMenuBar()->Check(ID_HIDEOBSCURED, (gOptions.worldType & HIDEOBSCURED) != 0);
+    wxArrayString names;
+    int current = 0;
+    for (const auto& dim : dimensions) {
+        if (dim.id == gWorldGuide.dimensionId) current = (int)names.size();
+        names.Add(wxString(dim.id));
     }
-    RedrawMap();
-    return true;
+    wxSingleChoiceDialog dialog(this, "Select a dimension", "Dimensions", names);
+    dialog.SetSelection(current);
+    if (dialog.ShowModal() == wxID_OK && !SwitchToDimension(dialog.GetStringSelection()))
+        wxMessageBox("The dimension directory is no longer available.", "Dimensions", wxOK | wxICON_ERROR, this);
 }
 
 void MinewaysFrame::OnViewHell(wxCommandEvent&)
@@ -1656,6 +1939,11 @@ void MinewaysFrame::OnViewEnd(wxCommandEvent&)
 void MinewaysFrame::RedrawMap()
 {
     ApplyMapMemory();
+    if (m_sliderTop) {
+        m_sliderTop->SetValue(gCurDepth);
+        m_labelTop->SetLabel(wxString::Format("%d", gCurDepth));
+    }
+    UpdateBottomSlider(gTargetDepth);
     if (m_mapPanel) m_mapPanel->RedrawMap();
 }
 
@@ -1734,10 +2022,12 @@ wxString MinewaysFrame::LoadWorldFromDir(const wxString& dir)
     int spawnX = 0, spawnY = 64, spawnZ = 0;
     int playerX = 0, playerY = 64, playerZ = 0;
     int dimension = 0;
+    strcpy(gPlayerDimension, "minecraft:overworld");
     GetSpawn(wdir, &spawnX, &spawnY, &spawnZ);
-    if (GetPlayer(wdir, &playerX, &playerY, &playerZ, &dimension) != 0) {
+    if (GetPlayer(wdir, &playerX, &playerY, &playerZ, &dimension, gPlayerDimension, sizeof(gPlayerDimension)) != 0) {
         playerX = spawnX; playerY = spawnY; playerZ = spawnZ;
         gWorldGuide.isServerWorld = true;
+        strcpy(gPlayerDimension, "minecraft:overworld");
     }
     gSpawnX = spawnX; gSpawnY = spawnY; gSpawnZ = spawnZ;
     gPlayerX = playerX; gPlayerY = playerY; gPlayerZ = playerZ;
@@ -1749,6 +2039,11 @@ wxString MinewaysFrame::LoadWorldFromDir(const wxString& dir)
     gMaxHeight = MAX_WORLD_HEIGHT(gVersionID, gMinecraftVersion);
     gWorldGuide.minHeight = gMinHeight;
     gWorldGuide.maxHeight = gMaxHeight;
+
+    gOptions.worldType &= ~(HELL | ENDER);
+    SelectWorldDimension(&gWorldGuide, L"minecraft:overworld", &gOptions.worldType);
+    gMinHeight = gWorldGuide.minHeight;
+    gMaxHeight = gWorldGuide.maxHeight;
 
     // Center view on spawn
     gCurX = (double)spawnX;
