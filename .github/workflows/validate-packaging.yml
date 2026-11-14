@@ -1,0 +1,45 @@
+name: Check candidate downloads
+on:
+  push:
+    branches: [codex/package-validation]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  mac-picker:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Check native desktop availability
+        run: osascript Mac/tests/launcher_picker.applescript preflight 0
+        timeout-minutes: 2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-macos-universal
+          path: candidate
+          github-token: ${{ github.token }}
+          run-id: 43566634787
+      - name: Extract the verified universal download
+        run: |
+          cd candidate
+          echo '269387135e23255a8ea5df9d3755f7db6152cc6a27cb15e90ab958ab0efa8249  Mineways-macOS.zip' | shasum -a 256 -c -
+          ditto -x -k Mineways-macOS.zip "fresh extraction"
+      - name: Install both real pack fixtures
+        run: python tools/test_launcher_real_packs.py "candidate/fresh extraction" --output launcher-packs
+      - name: Select both packs using their native dialogs
+        run: python Mac/tests/launcher_picker_gui.py "candidate/fresh extraction" --installations launcher-packs --output picker
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: mac-picker-evidence
+          path: |
+            picker/*.json
+            picker/*.log
+            picker/*/map.png
+            launcher-packs/validation.json
