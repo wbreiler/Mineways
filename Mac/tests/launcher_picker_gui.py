@@ -21,6 +21,7 @@ from import_mod_assets import decode_png
 from test_launcher_real_packs import fingerprint, validate_gui_exports
 
 APPLE = Path(__file__).with_name('launcher_picker.applescript')
+DIAGNOSTICS = None
 
 
 def export_script(destination):
@@ -45,7 +46,8 @@ def run(command, timeout=30, **kwargs):
 
 def ui(operation, pid=0, *args):
     if operation == 'choose':
-        args = (*args, Path(args[0]).parent, Path(args[0]).name)
+        args = (*args, Path(args[0]).parent, Path(args[0]).name,
+                DIAGNOSTICS / ('selected-' + Path(args[0]).name + '.png'))
     if operation in ('menu', 'choose'):
         print('UI ' + operation + ': ' + ' | '.join(map(str, args)), flush=True)
     return run(['/usr/bin/osascript', str(APPLE), operation, str(pid), *map(str, args)],
@@ -86,6 +88,7 @@ def capture_window(pid, destination):
 
 
 def smoke(package, installations, output):
+    global DIAGNOSTICS
     if (sys.platform != 'darwin' or os.environ.get('GITHUB_ACTIONS') != 'true'
             or os.environ.get('RUNNER_OS') != 'macOS'):
         raise RuntimeError('This UI test runs only on a disposable GitHub macOS runner')
@@ -102,6 +105,7 @@ def smoke(package, installations, output):
         setup = json.loads(setup_path.read_text())
         saves_before[str(Path(setup['world']).parent)] = fingerprint(Path(setup['world']).parent)
     output.mkdir(parents=True, exist_ok=False)
+    DIAGNOSTICS = output
     results = []
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(('DYLD_', 'PYTHON'))}

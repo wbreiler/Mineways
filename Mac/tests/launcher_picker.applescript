@@ -61,14 +61,24 @@ on run argv
                 repeat with entry in entries
                     try
                         if (value of entry) is (item 7 of argv) then
-                            click entry
+                            set rowElement to contents of entry
+                            repeat 5 times
+                                if (role of rowElement) is "AXRow" then exit repeat
+                                set rowElement to value of attribute "AXParent" of rowElement
+                            end repeat
+                            if (role of rowElement) is not "AXRow" then error "Filename has no native row."
+                            select rowElement
                             set foundRow to true
                             exit repeat
                         end if
                     end try
                 end repeat
                 if not foundRow then error "The selected folder/file row is absent: " & (item 7 of argv)
-                delay 0.2
+                delay 0.3
+                set panelPosition to position of window 1
+                set panelSize to size of window 1
+                set rectangle to ((item 1 of panelPosition) as text) & "," & (item 2 of panelPosition) & "," & (item 1 of panelSize) & "," & (item 2 of panelSize)
+                do shell script "/usr/sbin/screencapture -x -R" & rectangle & " " & quoted form of (item 8 of argv)
                 click openButton
                 return "selected"
             end if
