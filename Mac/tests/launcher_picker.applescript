@@ -47,13 +47,18 @@ on run argv
                 delay 0.5
                 if not (exists sheet 1 of window 1) then error "The Go to Folder sheet did not open."
                 keystroke "a" using command down
-                keystroke (item 6 of argv)
+                if (item 5 of argv) is "Choose a world from this modpack's saves folder" then
+                    keystroke (item 6 of argv)
+                else
+                    keystroke (item 3 of argv)
+                end if
                 key code 36
                 repeat 30 times
                     if not (exists sheet 1 of window 1) then exit repeat
                     delay 0.1
                 end repeat
                 if exists sheet 1 of window 1 then error "Go to Folder did not finish."
+                if (item 5 of argv) is "Choose a world from this modpack's saves folder" then
                 keystroke "2" using command down
                 delay 0.5
                 set foundRow to false
@@ -74,11 +79,12 @@ on run argv
                     end try
                 end repeat
                 if not foundRow then error "The selected folder/file row is absent: " & (item 7 of argv)
+                end if
                 delay 0.3
                 set panelPosition to position of window 1
                 set panelSize to size of window 1
-                set rectangle to ((item 1 of panelPosition) as text) & "," & (item 2 of panelPosition) & "," & (item 1 of panelSize) & "," & (item 2 of panelSize)
-                do shell script "/usr/sbin/screencapture -x -R" & rectangle & " " & quoted form of (item 8 of argv)
+                set panelRectangle to ((item 1 of panelPosition) as text) & "," & (item 2 of panelPosition) & "," & (item 1 of panelSize) & "," & (item 2 of panelSize)
+                do shell script "/usr/sbin/screencapture -x -R" & panelRectangle & " " & quoted form of (item 8 of argv)
                 click openButton
                 return "selected"
             end if
