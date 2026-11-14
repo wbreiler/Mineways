@@ -7,6 +7,7 @@ is used: the native picker alone loads each scene in the same app process.
 Never run this on the user's desktop. No permission or privacy settings change.
 """
 import argparse
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -78,13 +79,17 @@ def capture_window(pid, destination):
     width, height, pixels = decode_png(destination.read_bytes())
     if width < 400 or height < 250:
         raise AssertionError('The captured app window is unexpectedly small')
-    # Exclude menu, status, and edges. An empty/checkerboard map has few colors.
-    colors = {tuple(pixels[4 * (y * width + x):4 * (y * width + x) + 4])
-              for y in range(height // 4, 3 * height // 4)
-              for x in range(width // 4, 3 * width // 4)}
-    if len(colors) < 16:
-        raise AssertionError('The central map capture is empty or has too few colors')
-    return {'bounds': bounds, 'width': width, 'height': height, 'central_colors': len(colors)}
+    # The map uses flat block colors, not texture pixels. Check its selection and
+    # distinct sample colors. validate_gui_exports checks the actual source pixels.
+    colors = Counter(tuple(pixels[4 * (y * width + x):4 * (y * width + x) + 4])
+                     for y in range(height // 4, 3 * height // 4)
+                     for x in range(width // 4, 3 * width // 4))
+    selected = sum(count for (r, g, b, a), count in colors.items()
+                   if r > g * 1.5 and b > g * 1.5 and min(r, b) > 100 and a == 255)
+    if len(colors) < 5 or selected < 1000:
+        raise AssertionError('The map capture lacks the selection and distinct block colors')
+    return {'bounds': bounds, 'width': width, 'height': height,
+            'central_colors': len(colors), 'selection_pixels': selected}
 
 
 def smoke(package, installations, output):
