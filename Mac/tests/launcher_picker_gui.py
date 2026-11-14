@@ -34,17 +34,20 @@ def export_script(destination):
         'Export Schematic: ' + str(destination / 'roundtrip.schem'), ''])
 
 
-def run(command, **kwargs):
+def run(command, timeout=30, **kwargs):
     try:
         return subprocess.run(command, check=True, capture_output=True, text=True,
-                              timeout=30, **kwargs).stdout.strip()
+                              timeout=timeout, **kwargs).stdout.strip()
     except subprocess.CalledProcessError as error:
         print(error.stderr[-6000:], file=sys.stderr, flush=True)
         raise
 
 
 def ui(operation, pid=0, *args):
-    return run(['/usr/bin/osascript', str(APPLE), operation, str(pid), *map(str, args)])
+    if operation in ('menu', 'choose'):
+        print('UI ' + operation + ': ' + ' | '.join(map(str, args)), flush=True)
+    return run(['/usr/bin/osascript', str(APPLE), operation, str(pid), *map(str, args)],
+               timeout=120 if operation == 'choose' else 30)
 
 
 def wait_for(action, timeout=30):
@@ -145,6 +148,12 @@ def smoke(package, installations, output):
                 (output / 'last-ui.txt').write_text(ui('inspect', process.pid)[-12000:])
             except Exception as diagnostic_error:
                 print('Could not inspect test UI: ' + str(diagnostic_error), file=sys.stderr)
+            try:
+                capture_window(process.pid, output / 'last-window.png')
+            except Exception as diagnostic_error:
+                print('Could not capture test UI: ' + str(diagnostic_error), file=sys.stderr)
+            subprocess.run(['/usr/bin/sample', str(process.pid), '1', '1', '-file',
+                            str(output / 'app-sample.txt')], capture_output=True, timeout=15)
             raise
         finally:
             process.terminate()  # Only the exact process created above.

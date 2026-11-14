@@ -34,17 +34,9 @@ on run argv
             if operation is "choose" then
                 set frontmost to true
                 if not frontmost then error "The test process is not frontmost."
-                set elements to entire contents of window 1
-                set captionFound to false
-                set openButton to missing value
-                repeat with element in elements
-                    try
-                        if (role of element) is "AXStaticText" and (value of element) is (item 5 of argv) then set captionFound to true
-                        if (role of element) is "AXButton" and (name of element) is "Open" then set openButton to contents of element
-                    end try
-                end repeat
-                if not captionFound then error "The expected picker caption is absent."
-                if openButton is missing value then error "The native Open button is absent."
+                set panelGroup to splitter group 1 of window 1
+                if not (exists static text (item 5 of argv) of panelGroup) then error "The expected picker caption is absent."
+                set openButton to button "Open" of panelGroup
                 keystroke "g" using {command down, shift down}
                 delay 0.5
                 if not (exists sheet 1 of window 1) then error "The Go to Folder sheet did not open."
