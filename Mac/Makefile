@@ -1,7 +1,9 @@
-# Mineways macOS ARM64 build  (wxWidgets GUI)
+# Mineways native macOS build (wxWidgets GUI)
 # Usage: make -C Mac          (from repo root)
 
 CXX      := clang++
+ARCH     ?= $(shell uname -m)
+ARCH_FLAGS := $(foreach arch,$(ARCH),-arch $(arch))
 
 # Follow the Windows version in the upstream code included in this checkout.
 UPSTREAM_VERSION := $(shell awk '$$1 == "\#define" && $$2 == "MINEWAYS_MAJOR_VERSION" { major = $$3 } $$1 == "\#define" && $$2 == "MINEWAYS_MINOR_VERSION" { minor = $$3 } END { printf "%d.%02d", major, minor }' ../Win/stdafx.h)
@@ -17,7 +19,7 @@ VERSION_HEADER := .MinewaysVersion.h
 WX_CFLAGS := $(shell wx-config --cxxflags)
 WX_LIBS   := $(shell wx-config --libs)
 
-CXXFLAGS := -std=c++17 -arch arm64 -O2 -Wall \
+CXXFLAGS := -std=c++17 $(ARCH_FLAGS) -O2 -Wall \
             -MMD -MP \
             -Wno-unused-function \
             -Wno-macro-redefined \
@@ -31,7 +33,7 @@ CXXFLAGS := -std=c++17 -arch arm64 -O2 -Wall \
 # GUI files need wxWidgets flags on top of the base flags
 GUI_CXXFLAGS := $(CXXFLAGS) $(WX_CFLAGS)
 
-LDFLAGS  := -arch arm64
+LDFLAGS  := $(ARCH_FLAGS)
 LIBS     := -lz $(WX_LIBS)
 
 SRC_DIR  := ../Win
@@ -42,6 +44,7 @@ CORE_SRCS := $(SRC_DIR)/blockInfo.cpp \
              $(SRC_DIR)/lodepng.cpp \
              $(SRC_DIR)/rwpng.cpp \
              $(SRC_DIR)/nbt.cpp \
+             $(SRC_DIR)/ModSupport.cpp \
              $(SRC_DIR)/region.cpp \
              $(SRC_DIR)/cache.cpp \
              $(SRC_DIR)/ObjFileManip.cpp \
@@ -87,7 +90,7 @@ test-security: $(ALL_OBJS)
 	mkdir -p "$(SECURITY_TEST_DIR)"
 	$(CXX) $(CXXFLAGS) $(SANITIZER_FLAGS) tests/security_exports.cpp $(filter-out ObjFileManip.o,$(CORE_OBJS)) MacCullingSchemes.o $(LDFLAGS) $(LIBS) -o "$(SECURITY_TEST_DIR)/exports"
 	"$(SECURITY_TEST_DIR)/exports" "$(SECURITY_TEST_DIR)"
-	$(CXX) $(CXXFLAGS) $(SANITIZER_FLAGS) tests/security_nbt.cpp $(SRC_DIR)/nbt.cpp $(SRC_DIR)/blockInfo.cpp $(SRC_DIR)/biomes.cpp -lz -o "$(SECURITY_TEST_DIR)/nbt"
+	$(CXX) $(CXXFLAGS) $(SANITIZER_FLAGS) tests/security_nbt.cpp $(SRC_DIR)/nbt.cpp $(SRC_DIR)/ModSupport.cpp $(SRC_DIR)/blockInfo.cpp $(SRC_DIR)/biomes.cpp $(SRC_DIR)/lodepng.cpp -lz -o "$(SECURITY_TEST_DIR)/nbt"
 	"$(SECURITY_TEST_DIR)/nbt" "$(SECURITY_TEST_DIR)"
 	TMPDIR="$(SECURITY_TEST_DIR)" python3 tests/security_textures.py
 	TMPDIR="$(SECURITY_TEST_DIR)" python3 tests/security_png.py
@@ -158,3 +161,31 @@ clean:
 	rm -f *.o *.d $(TARGET) $(VERSION_HEADER)
 
 -include $(ALL_DEPS)
+
+# Data-only importer and native registry checks. Each execution uses fresh fixtures.
+.PHONY: test-mods
+test-mods: $(ALL_OBJS)
+	python3 -m unittest discover -s tests -p 'mod_*.py'
+	$(CXX) $(CXXFLAGS) $(SANITIZER_FLAGS) tests/mod_support.cpp $(SRC_DIR)/ModSupport.cpp $(SRC_DIR)/blockInfo.cpp $(SRC_DIR)/biomes.cpp $(SRC_DIR)/lodepng.cpp -lz -o /tmp/mineways-mod-support
+	/tmp/mineways-mod-support "$$(mktemp -d /tmp/mineways-mod-support.XXXXXX)"
+
+	$(CXX) $(CXXFLAGS) $(SANITIZER_FLAGS) tests/mod_exports.cpp $(SRC_DIR)/ModSupport.cpp $(SRC_DIR)/nbt.cpp $(SRC_DIR)/MinewaysMap.cpp $(filter-out ObjFileManip.o ModSupport.o nbt.o MinewaysMap.o,$(CORE_OBJS)) MacCullingSchemes.o $(LDFLAGS) $(LIBS) -o /tmp/mineways-mod-exports
+	@mod_test_dir=$$(mktemp -d /tmp/mineways-mod-exports.XXXXXX); \
+	  python3 tests/mod_assets.py --fixture "$$mod_test_dir/fixture" && \
+	  /tmp/mineways-mod-exports "$$mod_test_dir/fixture/pack/manifest.mwpack" "$$mod_test_dir/output"
+
+# Optional local integration test; the pack assets remain outside the repository.
+.PHONY: test-real-mods
+test-real-mods: $(VERSION_HEADER)
+	@test -n "$(MOD_PACK)" || { echo 'Set MOD_PACK=/path/to/manifest.mwpack'; exit 2; }
+	@real_mod_dir=$$(mktemp -d /tmp/mineways-real-mods.XXXXXX); \
+	  $(CXX) $(GUI_CXXFLAGS) $(SANITIZER_FLAGS) tests/real_mod_pack.cpp $(filter-out $(SRC_DIR)/ObjFileManip.cpp,$(CORE_SRCS)) MacCullingSchemes.cpp $(LDFLAGS) $(LIBS) -o "$$real_mod_dir/test" && \
+	  "$$real_mod_dir/test" "$(MOD_PACK)" "$$real_mod_dir/output"
+
+# All uint16 block IDs and the selected imported texture budget. Assets are synthetic.
+.PHONY: test-mod-limits
+test-mod-limits: $(VERSION_HEADER)
+	@mod_limit_dir=$$(mktemp -d /tmp/mineways-mod-limits.XXXXXX); \
+	  python3 tests/mod_assets.py --limits-fixture "$$mod_limit_dir/fixture" && \
+	  $(CXX) $(GUI_CXXFLAGS) $(SANITIZER_FLAGS) tests/mod_limits.cpp $(filter-out $(SRC_DIR)/ObjFileManip.cpp,$(CORE_SRCS)) MacCullingSchemes.cpp $(LDFLAGS) $(LIBS) -o "$$mod_limit_dir/test" && \
+	  "$$mod_limit_dir/test" "$$mod_limit_dir/fixture/pack/manifest.mwpack" "$$mod_limit_dir/output"

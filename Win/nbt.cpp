@@ -31,6 +31,7 @@ THE POSSIBILITY OF SUCH DAMAGE.
 #include <assert.h>
 #include <limits.h>
 #include <stdint.h>
+#include "ModSupport.h"
 
 // We know we won't run into names longer than 100 characters. The old code was
 // safe, but was also allocating strings all the time - seems slow.
@@ -46,18 +47,18 @@ static int skipListDepth(bfFile* pbf, int depth, int* tagBudget);
 static int skipCompoundDepth(bfFile* pbf, int depth, int* tagBudget);
 
 static int readBiomePalette(bfFile* pbf, unsigned char* paletteBiomeEntry, int& entryIndex);
-static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned char* paletteBlockEntry, unsigned short* paletteDataEntry, int& entryIndex, char* unknownBlock, int unknownBlockID);
+static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned short* paletteBlockEntry, unsigned short* paletteDataEntry, int& entryIndex, char* unknownBlock, int unknownBlockID);
 static int readBlockData(bfFile* pbf, int& bigbufflen, unsigned char* bigbuff);
 
 typedef struct BlockTranslator {
     int hashSum;
     unsigned short blockId;   // the type's low 8 bits, plus 256 if dataVal has TYPE_PROMOTE_256. A blockId over 511 is the whole type (types this large have no TYPE_PROMOTE_256).
-    unsigned short dataVal;   // packed as WorldBlock.data[] is (see nbt.h): the low 12 bits are the dataVal, and TYPE_PROMOTE_256 adds 256 to the type
+    unsigned short dataVal;   // legacy table encoding: low 12 bits state; TYPE_PROMOTE_256 adds 256 to blockId
     char* name;
     unsigned long translateFlags;
 } BlockTranslator;
 
-// BlockTranslations[]' dataVal is packed as WorldBlock.data[] is: its low 12 bits are all data, and TYPE_PROMOTE_256, apart from them,
+// BlockTranslations[] retains its historical encoding: low 12 bits are state, and TYPE_PROMOTE_256
 // means "type + 256". So bit 0x80 is plain data for every block, e.g. a floor head's rotation mode, or a potted cactus's, bamboo's, or
 // azalea's field, and types 140 + 256 and 144 + 256 are free for other blocks.
 // This gives the "type + 256" flag in the old 8-bit form, TYPE_HIGH_BIT1 or 0, as the .schem parser's typeHighBit keeps it.
@@ -2182,6 +2183,17 @@ int SlowFindIndexFromName(char* name)
 
 // Build the block and biome name tables now, rather than on first use by nbtGetBlocks(), which isn't safe when chunks are
 // loaded on several threads at once.
+// Is name one of the ", "-separated names in list? Not just part of one: "zinc_ore" isn't in "deepslate_zinc_ore".
+bool NameInList(const char* list, const char* name)
+{
+    size_t len = strlen(name);
+    for (const char* found = strstr(list, name); found != NULL; found = strstr(found + 1, name)) {
+        if ((found == list || (found >= list + 2 && found[-2] == ',' && found[-1] == ' ')) && (found[len] == '\0' || found[len] == ','))
+            return true;
+    }
+    return false;
+}
+
 void makeBiomeHashTable();
 void nbtInitTables()
 {
@@ -2464,7 +2476,8 @@ static double readDouble(bfFile* pbf)
     return fl.f;
 }
 #define NBT_SKIP_MAX_DEPTH 64
-#define NBT_SKIP_TAG_BUDGET 100000
+// ATM10 world generation metadata exceeds 200,000 tags in a valid level.dat.
+#define NBT_SKIP_TAG_BUDGET 1000000
 
 static bool skipReadWord(bfFile* pbf, unsigned short* value)
 {
@@ -2635,7 +2648,8 @@ static int skipCompoundDepth(bfFile* pbf, int depth, int* tagBudget)
 static int compare(bfFile* pbf, char* name)
 {
     int ret = 0;
-    int len = readWord(pbf);
+    unsigned short len;
+    if (!skipReadWord(pbf, &len)) return -1;
     char thisName[MAX_NAME_LENGTH];
     if (len >= MAX_NAME_LENGTH)
         return -1;
@@ -2682,7 +2696,197 @@ unsigned char mod16(int val)
 #define FORMAT_1_13_THROUGH_1_17    1
 #define FORMAT_1_18_AND_NEWER       2
 // return negative value on error, 1 on read OK, 2 on read and it's empty, and higher bits than 1 or 2 are warnings
-int nbtGetBlocks(bfFile* pbf, unsigned char* buff, unsigned short* data, unsigned char* blockLight, unsigned char* biome, BlockEntity* entities, int* numEntities, int mcVersion, int minHeight, int maxHeight, int & mfsHeight, char* unknownBlock, int unknownBlockID)
+// Legacy NBT arrays contain bytes even though the destination grid/state is 16-bit.
+static bool readByteValues(bfFile* pbf, unsigned short* output, int count)
+{
+    unsigned char bytes[4096];
+    while (count > 0) {
+        const int chunk = (std::min)(count, (int)sizeof(bytes));
+        if (bfread(pbf, bytes, chunk) != chunk) return false;
+        for (int i = 0; i < chunk; ++i) *output++ = bytes[i];
+        count -= chunk;
+    }
+    return true;
+}
+
+// Saved model context is deliberately small: retain only fields used by declared split
+// models, not arbitrary inventories, capabilities, or other block-entity payloads.
+static const int MOD_CONTEXT_MAX_ENTITIES = 65536;
+static const int MOD_CONTEXT_MAX_BYTES = 16 * 1024 * 1024;
+struct ModSavedEntity {
+    bool validContext = true;
+    int position[3] = {};
+    int index = 0;
+    ModBlockContext context;
+};
+
+static bool modNbtInt(bfFile* pbf, int& value)
+{
+    unsigned char bytes[4];
+    if (bfread(pbf, bytes, 4) < 0) return false;
+    const uint32_t bits = ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+        ((uint32_t)bytes[2] << 8) | bytes[3];
+    value = (int)(int32_t)bits;
+    return true;
+}
+
+static bool modNbtString(bfFile* pbf, std::string& value, int maxLength)
+{
+    unsigned char bytes[2];
+    if (bfread(pbf, bytes, 2) < 0) return false;
+    const int length = ((int)bytes[0] << 8) | bytes[1];
+    if (length > maxLength) return false;
+    value.resize((size_t)length);
+    return (!length || bfread(pbf, &value[0], length) >= 0) && value.find('\0') == std::string::npos;
+}
+
+static bool modNbtPosition(bfFile* pbf, int* position)
+{
+    int count;
+    if (!modNbtInt(pbf, count) || count != 3) return false;
+    for (int axis = 0; axis < 3; ++axis) if (!modNbtInt(pbf, position[axis])) return false;
+    return true;
+}
+
+// format: 0 = modern chunk, 1 = Sponge v2, 2 = Sponge v3, 3 = v3 Data payload.
+static bool modNbtEntity(bfFile* pbf, int format, ModSavedEntity& entity, int listStart, int& tagBudget)
+{
+    bool haveId = false, havePosition[3] = {}, haveData = false;
+    for (;;) {
+        const int offset = bftell(pbf);
+        if (offset < listStart || offset - listStart > MOD_CONTEXT_MAX_BYTES || --tagBudget < 0) return false;
+        unsigned char type;
+        if (bfread(pbf, &type, 1) < 0) return false;
+        if (!type) break;
+        std::string name;
+        if (!modNbtString(pbf, name, 1024)) return false;
+        if (format != 3 && name == (format == 0 ? "id" : "Id")) {
+            if (haveId || type != 8 || !modNbtString(pbf, entity.context.entityId, 255) || entity.context.entityId.empty()) return false;
+            haveId = true;
+        }
+        else if (format == 0 && (name == "x" || name == "y" || name == "z")) {
+            const int axis = name == "x" ? 0 : (name == "y" ? 1 : 2);
+            if (havePosition[axis] || type != 3 || !modNbtInt(pbf, entity.position[axis])) return false;
+            havePosition[axis] = true;
+        }
+        else if ((format == 1 || format == 2) && name == "Pos") {
+            if (havePosition[0] || type != 11 || !modNbtPosition(pbf, entity.position)) return false;
+            havePosition[0] = havePosition[1] = havePosition[2] = true;
+        }
+        else if (format == 2 && name == "Data") {
+            if (haveData || type != 10 || !modNbtEntity(pbf, 3, entity, listStart, tagBudget)) return false;
+            haveData = true;
+        }
+        else if (format != 2 && name == "dummy") {
+            if (entity.context.hasDummy || type != 3) {
+                entity.validContext = false;
+                if (skipType(pbf, type) < 0) return false;
+            }
+            else {
+                if (!modNbtInt(pbf, entity.context.dummy)) return false;
+                entity.context.hasDummy = true;
+            }
+        }
+        else if (format != 2 && name == "posInMB") {
+            if (entity.context.hasPosition || type != 11) {
+                entity.validContext = false;
+                if (skipType(pbf, type) < 0) return false;
+            }
+            else {
+                // Unknown mods may use this name for another array shape. Skip their
+                // payload, but reject it if this voxel needs the supported IE context.
+                const int positionOffset = bftell(pbf);
+                if (positionOffset < 0) return false;
+                if (!modNbtPosition(pbf, entity.context.position)) {
+                    entity.validContext = false;
+                    if (bfseek(pbf, positionOffset, SEEK_SET) < 0 || skipType(pbf, type) < 0) return false;
+                }
+                else entity.context.hasPosition = true;
+            }
+        }
+        else if (skipType(pbf, type) < 0) return false;
+    }
+    return format == 3 || (haveId && havePosition[0] && havePosition[1] && havePosition[2]);
+}
+
+static bool modReadEntityList(bfFile* pbf, int format, unsigned short* blocks, unsigned short* data,
+    int width, int height, int length, int64_t originX, int64_t originY, int64_t originZ)
+{
+    try {
+        const int start = bftell(pbf);
+        unsigned char type;
+        int count;
+        const int64_t volume = (int64_t)width * height * length;
+        if (start < 0 || width <= 0 || height <= 0 || length <= 0 || volume > INT_MAX ||
+            bfread(pbf, &type, 1) < 0 || !modNbtInt(pbf, count) || count < 0 || count > MOD_CONTEXT_MAX_ENTITIES || count > volume ||
+            (type != 10 && !(count == 0 && type == 0))) return false;
+        std::vector<ModSavedEntity> pending;
+        pending.reserve((size_t)count);
+        int tagBudget = 1024 * 1024;
+        for (int i = 0; i < count; ++i) {
+            ModSavedEntity entity;
+            if (!modNbtEntity(pbf, format, entity, start, tagBudget)) return false;
+            const int64_t x = (int64_t)entity.position[0] - originX;
+            const int64_t y = (int64_t)entity.position[1] - originY;
+            const int64_t z = (int64_t)entity.position[2] - originZ;
+            if (x < 0 || x >= width || y < 0 || y >= height || z < 0 || z >= length) return false;
+            entity.index = (int)((y * length + z) * width + x);
+            pending.push_back(std::move(entity));
+        }
+        const int end = bftell(pbf);
+        if (end < start || end - start > MOD_CONTEXT_MAX_BYTES) return false;
+        std::sort(pending.begin(), pending.end(), [](const ModSavedEntity& a, const ModSavedEntity& b) { return a.index < b.index; });
+        for (size_t i = 1; i < pending.size(); ++i) if (pending[i - 1].index == pending[i].index) return false;
+        // Validate the entire list before attaching any record to a voxel.
+        for (const auto& entity : pending) {
+            const int index = entity.index;
+            if (!ModBlockNeedsContext(blocks[index], data[index])) continue;
+            if (!entity.validContext) return false;
+            int resolved = data[index];
+            if (ResolveModContext(blocks[index], data[index], entity.context, &resolved) < 0) return false;
+            // Even a valid unknown part retains its context for a lossless schematic round trip.
+            data[index] = (unsigned short)resolved;
+        }
+        return true;
+    } catch (const std::bad_alloc&) { return false; }
+}
+
+static bool modReadChunkEntities(bfFile* pbf, int rootOffset, unsigned short* blocks, unsigned short* data,
+    int minHeight, int maxHeight)
+{
+    try {
+        if (bfseek(pbf, rootOffset, SEEK_SET) < 0) return false;
+        bool haveX = false, haveZ = false;
+        int chunkX = 0, chunkZ = 0, entitiesOffset = -1;
+        for (;;) {
+            unsigned char type;
+            if (bfread(pbf, &type, 1) < 0) return false;
+            if (!type) break;
+            std::string name;
+            if (!modNbtString(pbf, name, 1024)) return false;
+            if (name == "xPos" || name == "zPos") {
+                bool& have = name == "xPos" ? haveX : haveZ;
+                int& coordinate = name == "xPos" ? chunkX : chunkZ;
+                if (have || type != 3 || !modNbtInt(pbf, coordinate)) return false;
+                have = true;
+            }
+            else {
+                if (name == "block_entities") {
+                    if (type != 9 || entitiesOffset >= 0) return false;
+                    entitiesOffset = bftell(pbf);
+                    if (entitiesOffset < 0) return false;
+                }
+                if (skipType(pbf, type) < 0) return false;
+            }
+        }
+        if (entitiesOffset < 0) return true;
+        if (!haveX || !haveZ || bfseek(pbf, entitiesOffset, SEEK_SET) < 0) return false;
+        return modReadEntityList(pbf, 0, blocks, data, 16, maxHeight - minHeight + 1, 16,
+            (int64_t)chunkX * 16, minHeight, (int64_t)chunkZ * 16);
+    } catch (const std::bad_alloc&) { return false; }
+}
+
+int nbtGetBlocks(bfFile* pbf, unsigned short* buff, unsigned short* data, unsigned char* blockLight, unsigned char* biome, BlockEntity* entities, int* numEntities, int mcVersion, int minHeight, int maxHeight, int & mfsHeight, char* unknownBlock, int unknownBlockID)
 {
     int len, nsections, i;
     int biome_save;
@@ -2943,7 +3147,7 @@ SectionsCode:
         // was:    return LINE_ERROR;
     }
 
-    memset(buff, 0, 16 * 16 * heightAlloc);
+    memset(buff, 0, 16 * 16 * (size_t)heightAlloc * sizeof(*buff));
     memset(data, 0, 16 * 16 * heightAlloc * sizeof(unsigned short));
     memset(blockLight, 0, 16 * 16 * heightAlloc / 2);
 
@@ -3052,7 +3256,7 @@ SectionsCode:
                     len = readDword(pbf); //array length
                     if (y < 0 || 16 * (y + 1) > heightAlloc || len != 16 * 16 * 16)
                         return LINE_ERROR;
-                    if (bfread(pbf, buff + 16 * 16 * 16 * y, len) != len)
+                    if (!readByteValues(pbf, buff + 16 * 16 * 16 * y, len))
                         return LINE_ERROR;
                     // and update the maxFilledSectionHeight
                     sectionHeight = 16 * y + 15;
@@ -3094,8 +3298,8 @@ SectionsCode:
             int bigbufflen = 0;
             int paletteLength = 0;
             // could theoretically get higher...
-            unsigned char paletteBlockEntry[MAX_PALETTE];
-            // low 12 bits dataVal, top 4 bits the type's bits 8-11 - see PACK_TYPE_EXT_AND_DATAVAL in nbt.h.
+            unsigned short paletteBlockEntry[MAX_PALETTE];
+            // Independent 12-bit state values.
             unsigned short paletteDataEntry[MAX_PALETTE];
             for (;;)
             {
@@ -3476,8 +3680,7 @@ SectionsCode:
                         return LINE_ERROR;
             }
 
-            // paletteDataEntry[] is already packed by readPalette() (low 12 bits dataVal, top 4
-            // bits the type's bits 8-11 - see PACK_TYPE_EXT_AND_DATAVAL in nbt.h), matching
+            // paletteDataEntry[] contains independent state values, matching
             // block->data[]'s format directly - no separate conversion pass needed here.
 
             // Now that we have all the data, convert bigbuff layer into buff and data values
@@ -3510,7 +3713,7 @@ SectionsCode:
                     unsigned long int bitmask = (1UL << bitlength) - 1;
                     const int bigbuffByteLength = bigbufflen * 8;
 
-                    unsigned char* bout = buff + 16 * 16 * 16 * (int)(y - minHeight16);
+                    unsigned short* bout = buff + 16 * 16 * 16 * (int)(y - minHeight16);
                     unsigned short* dout = data + 16 * 16 * 16 * (int)(y - minHeight16);
                     sectionHeight = 16 * (y - minHeight16) + 15;
                     // and update the maxFilledSectionHeight
@@ -3598,9 +3801,9 @@ SectionsCode:
                     // check the single palette entry. 99.9% of the time it's air, in which case
                     // we're done - the chunk is already filled with 0's. If not air, then
                     // we need to fill the 16x16x16 volume with the item's value.
-                    unsigned char* bout = buff + 16 * 16 * 16 * (int)(y - minHeight16);
+                    unsigned short* bout = buff + 16 * 16 * 16 * (int)(y - minHeight16);
                     unsigned short* dout = data + 16 * 16 * 16 * (int)(y - minHeight16);
-                    memset(bout, paletteBlockEntry[0], 16 * 16 * 16);
+                    std::fill(bout, bout + 16 * 16 * 16, paletteBlockEntry[0]);
                     // memset only fills a repeated *byte*, so it can't be used for a uniform
                     // unsigned short fill - loop instead (dout[0] is the same for every entry).
                     for (int fillIdx = 0; fillIdx < 16 * 16 * 16; fillIdx++)
@@ -3623,6 +3826,8 @@ SectionsCode:
         // no real data found in the block - this can happen with modded worlds, etc.
         return NBT_NO_SECTIONS;   // means it's empty
     }
+    if (formatClass == FORMAT_1_18_AND_NEWER && ModPackLoaded() &&
+        !modReadChunkEntities(pbf, level_save, buff, data, minHeight, maxHeight)) return LINE_ERROR;
     if (formatClass == FORMAT_UP_THROUGH_1_12) {
         // 1.12 and earlier format - get TileEntities for data about heads, flower pots, standing banners
         if (nbtFindElement(pbf, "TileEntities") != 9)
@@ -3973,6 +4178,51 @@ static int readBlockData(bfFile* pbf, int& bigbufflen, unsigned char *bigbuff)
     return 0;
 }
 
+// A biome Mineways doesn't know, e.g. one from a mod or data pack, such as "terralith:arid_highlands": use a vanilla biome with
+// the same name, or one with a word in common, for grass, foliage, and water colors, else plains.
+static int similarBiomeIndex(const char* fullName)
+{
+    // the name past the namespace and any folders, e.g. "deep_caves" for "terralith:cave/deep_caves"
+    const char* name = strrchr(fullName, '/');
+    if (name == NULL)
+        name = strchr(fullName, ':');
+    name = (name == NULL) ? fullName : name + 1;
+    char lcName[MAX_NAME_LENGTH];
+    strcpy_s(lcName, MAX_NAME_LENGTH, name);
+    _strlwr_s(lcName, MAX_NAME_LENGTH);
+    int index = findIndexFromBiomeName(lcName);
+    if (index >= 0 && index <= MAX_VALID_BIOME_ID)
+        return index;
+
+    // the first word found wins, so more specific words go first
+    static const char* similar[][2] = {
+        { "mangrove", "mangrove_swamp" }, { "swamp", "swamp" }, { "marsh", "swamp" }, { "bog", "swamp" },
+        { "badlands", "badlands" }, { "mesa", "badlands" }, { "canyon", "badlands" },
+        { "desert", "desert" }, { "dune", "desert" },
+        { "jungle", "jungle" }, { "tropic", "jungle" },
+        { "savanna", "savanna" }, { "arid", "savanna" }, { "shrub", "savanna" }, { "brush", "savanna" }, { "steppe", "savanna" },
+        { "frozen", "snowy_plains" }, { "snow", "snowy_plains" }, { "glacier", "snowy_plains" }, { "tundra", "snowy_plains" },
+        { "cherry", "cherry_grove" }, { "birch", "birch_forest" }, { "taiga", "taiga" }, { "spruce", "taiga" }, { "pine", "taiga" },
+        { "forest", "forest" }, { "wood", "forest" },
+        { "mushroom", "mushroom_fields" }, { "lush", "lush_caves" }, { "dripstone", "dripstone_caves" }, { "deep_dark", "deep_dark" },
+        { "ocean", "ocean" }, { "sea", "ocean" }, { "beach", "beach" }, { "shore", "beach" }, { "river", "river" }, { "lake", "river" },
+        { "meadow", "meadow" }, { "peak", "stony_peaks" }, { "mountain", "windswept_hills" },
+        { "crimson", "crimson_forest" }, { "warped", "warped_forest" }, { "basalt", "basalt_deltas" }, { "soul", "soul_sand_valley" },
+        { "nether", "nether_wastes" },
+    };
+    for (int i = 0; i < (int)(sizeof(similar) / sizeof(similar[0])); i++) {
+        if (strstr(lcName, similar[i][0]) != NULL) {
+            char vanilla[MAX_NAME_LENGTH];
+            strcpy_s(vanilla, MAX_NAME_LENGTH, similar[i][1]);
+            index = findIndexFromBiomeName(vanilla);
+            if (index >= 0)
+                return index;
+        }
+    }
+    // plains
+    return 1;
+}
+
 static int readBiomePalette(bfFile* pbf, unsigned char* paletteBiomeEntry, int& entryIndex)
 {
     int len;
@@ -4001,22 +4251,30 @@ static int readBiomePalette(bfFile* pbf, unsigned char* paletteBiomeEntry, int& 
     // go through entries in Palette
     while (nentries--) {
         len = readWord(pbf);
-        if (len <= 10 || len >= MAX_NAME_LENGTH)
+        if (len <= 0 || len >= MAX_NAME_LENGTH)
             return LINE_ERROR;  // really, should not reach here if the data's OK
         if (bfread(pbf, thisBiomeName, len) < 0)
             return LINE_ERROR;
         thisBiomeName[len] = 0;
-        if (strncmp(thisBiomeName, "minecraft:", 10) != 0)
+        std::string canonicalBiome;
+        if (strchr(thisBiomeName, '[') || !CanonicalModState(std::string(thisBiomeName, len), canonicalBiome))
             return LINE_ERROR;
         // convert biome name to the proper index
-        // The +10 goes past the "minecraft:" part of the name in the palette
-        int index = findIndexFromBiomeName(thisBiomeName+10);
-        if (index < 0) {
-            // Name not found - fail!
-            assert(0);
-            index = 0;
+        int index;
+        if (strncmp(thisBiomeName, "minecraft:", 10) == 0) {
+            // The +10 goes past the "minecraft:" part of the name in the palette
+            index = findIndexFromBiomeName(thisBiomeName + 10);
+            if (index < 0) {
+                // Name not found - a biome newer than this version of Mineways?
+                assert(0);
+                index = similarBiomeIndex(thisBiomeName);
+            }
         }
-        else if (index > MAX_VALID_BIOME_ID) {
+        else {
+            // a biome from a mod or data pack, e.g. Terralith's
+            index = similarBiomeIndex(thisBiomeName);
+        }
+        if (index > MAX_VALID_BIOME_ID) {
             // possibly hit if some weirdness happens with Bedrock -> Classic conversion?
             assert(0);
             index = 0;
@@ -4172,7 +4430,58 @@ static bool familyFacesNorthByDefault(int family)
     return false;
 }
 
-static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned char *paletteBlockEntry, unsigned short *paletteDataEntry, int& entryIndex, char* unknownBlock, int unknownBlockID)
+// Read mod states independently so vanilla property parsers never interpret mod-specific values.
+static int readModPaletteEntry(bfFile* pbf, int* outType, int* outData, std::string& unsupportedState)
+{
+    const int start = bftell(pbf);
+    if (start < 0) return -1;
+    std::string name;
+    std::map<std::string, std::string> properties;
+    auto readString = [&](std::string& value) {
+        const int length = readWord(pbf);
+        if (length < 0 || length > 1023) return false;
+        value.resize(length);
+        return length == 0 || bfread(pbf, &value[0], length) >= 0;
+    };
+    int tags = 0;
+    for (;;) {
+        unsigned char tag;
+        if (++tags > 256 || bfread(pbf, &tag, 1) < 0) return -1;
+        if (!tag) break;
+        std::string key;
+        if (!readString(key)) return -1;
+        if (tag == 8 && (key == "Name" || key == "id" || key.empty())) {
+            if (!name.empty() || !readString(name)) return -1;
+        }
+        else if (tag == 10 && (key == "Properties" || key == "properties")) {
+            for (;;) {
+                unsigned char propTag;
+                if (++tags > 256 || bfread(pbf, &propTag, 1) < 0) return -1;
+                if (!propTag) break;
+                std::string token, value;
+                if (!readString(token)) return -1;
+                if (propTag == 8) {
+                    if (!readString(value) || properties.size() >= 64 || !properties.emplace(token, value).second) return -1;
+                }
+                else if (skipType(pbf, propTag) < 0) return -1;
+            }
+        }
+        else if (skipType(pbf, tag) < 0) return -1;
+    }
+    if (HasModBlock(name)) {
+        std::string state = name;
+        for (const auto& prop : properties) state += (state == name ? "[" : ",") + prop.first + "=" + prop.second;
+        if (!properties.empty()) state += "]";
+        const int result = ResolveModState(state, outType, outData);
+        if (result != 0) return result;
+        // Keep unsupported states out of vanilla property parsing, but retain the rest of the chunk.
+        unsupportedState = state;
+        return 2;
+    }
+    return bfseek(pbf, start, SEEK_SET) < 0 ? -1 : 0;
+}
+
+static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned short *paletteBlockEntry, unsigned short *paletteDataEntry, int& entryIndex, char* unknownBlock, int unknownBlockID)
 {
     int dataVal, len;
     unsigned char type;
@@ -4224,14 +4533,14 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
     if (nentries > MAX_PALETTE)
         return LINE_ERROR;
 
-    char thisBlockName[MAX_NAME_LENGTH];
-    char entryName[MAX_NAME_LENGTH];    // the block's name for the current entry, kept since thisBlockName gets reused for other things
+    char thisBlockName[1024];
+    char entryName[1024];    // the block's name for the current entry, kept since thisBlockName gets reused for other things
 
     // Each entry is read from pbf. For a list of strings, we instead make a compound for each entry in memory, so that both forms
     // are read by the same code. If an entry has no properties, we may also make up the properties of the default state in memory.
     bfFile* pbfList = pbf;
     bfFile memBf;
-    unsigned char memBuf[MAX_NAME_LENGTH * 8];
+    unsigned char memBuf[1024 * 8];
     memBf.type = BF_BUFFER;
     memBf.buf = memBuf;
     memBf.buflen = 0;
@@ -4264,7 +4573,7 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
         if (stringEntries) {
             // make a compound: string "Name" and then the end tag
             len = readWord(pbfList);
-            if (len >= MAX_NAME_LENGTH)
+            if (len >= (int)sizeof(thisBlockName))
                 return LINE_ERROR;
             if (bfread(pbfList, thisBlockName, len) < 0)
                 return LINE_ERROR;
@@ -4284,10 +4593,37 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
             memBf._offset = 0;
             pbf = &memBf;
         }
+        if (ModPackLoaded()) {
+            int modType, modData;
+            std::string unsupportedState;
+            const int modResult = readModPaletteEntry(pbf, &modType, &modData, unsupportedState);
+            if (modResult < 0) return LINE_ERROR;
+            if (modResult == 2) {
+                modType = unknownBlockID;
+                modData = 0;
+                returnCode |= NBT_WARNING_NAME_NOT_FOUND;
+                if (unknownBlock != NULL && strstr(unknownBlock, unsupportedState.c_str()) == NULL) {
+                    const std::string diagnostic = (unknownBlock[0] ? ", " : "") + unsupportedState + " (unsupported state)";
+                    const size_t used = strlen(unknownBlock);
+                    const size_t count = (std::min)(diagnostic.size(), (size_t)MAX_PATH_AND_FILE - used - 1);
+                    memcpy(unknownBlock + used, diagnostic.data(), count);
+                    unknownBlock[used + count] = 0;
+                }
+            }
+            if (modResult > 0) {
+                paletteBlockEntry[entryIndex] = (unsigned short)modType;
+                paletteDataEntry[entryIndex++] = PACK_TYPE_EXT_AND_DATAVAL(modType, modData);
+                continue;
+            }
+        }
         // avoid inheriting these properties, which are always folded in (false if not found in block, so does no harm)
         waterlogged = false;
         // set true if the block found is not known
         bool useData = true;
+#ifdef _DEBUG
+        // a property that isn't known, if any. The properties can come before the block's name, so this is checked once the block is known.
+        char unknownProperty[100] = "";
+#endif
 
         for (;;)
         {
@@ -4379,11 +4715,8 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
                 typeIndex = findIndexFromName(thisBlockName);
                 if (typeIndex > -1) {
                     useData = true;
-                    paletteBlockEntry[entryIndex] = (unsigned char)(BlockTranslations[typeIndex].blockId & 0xFF);
-                    // BlockTranslations[]' dataVal has the real data in its low 12 bits, and TYPE_PROMOTE_256
-                    // for "promote type by 256". Pack that into the wide format here so paletteDataEntry[] is
-                    // correct from this point on; PROP arms below OR further real dataVal bits into
-                    // the low 12 bits without touching the type-extension nibble (bits 12-15).
+                    paletteBlockEntry[entryIndex] = (unsigned short)translatorFullType(&BlockTranslations[typeIndex]);
+                    // Decode the historical table promotion once; storage keeps type and state separate.
                     {
                         int fullType = translatorFullType(&BlockTranslations[typeIndex]);
                         paletteDataEntry[entryIndex] = PACK_TYPE_EXT_AND_DATAVAL(fullType, translatorDataVal(&BlockTranslations[typeIndex]));
@@ -4417,7 +4750,7 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
                             if (strcmp(ptt->name, unknownName) == 0) {
                                 // found a match
                                 matched = true;
-                                paletteBlockEntry[entryIndex] = (unsigned char)(BlockTranslations[ptt->type].blockId & 0xFF);
+                                paletteBlockEntry[entryIndex] = (unsigned short)translatorFullType(&BlockTranslations[ptt->type]);
                                 // see the matching pack above - same table, same conversion.
                                 {
                                     int fullType = translatorFullType(&BlockTranslations[ptt->type]);
@@ -4435,8 +4768,8 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
                         }
 
                         // Name not found for translation, so report an error and add it to the list
-                        // is name already in string? Yes, there could be names inside names, but this isn't meant to be thorough.
-                        if (strstr(unknownBlock, unknownName) == NULL) {
+                        // is name already in string?
+                        if (!NameInList(unknownBlock, unknownName)) {
                             // name is unique
                             size_t stringLength = strlen(unknownBlock);
                             if (stringLength + strlen(unknownName) + 8 < MAX_PATH_AND_FILE) {
@@ -4453,10 +4786,9 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
                         }
                     }
                     // Make unknown blocks air (0) by default, or whatever the user has set with the script command "Set unknown block ID".
-                    paletteBlockEntry[entryIndex] = (unsigned char)(unknownBlockID & 0xff);
+                    paletteBlockEntry[entryIndex] = (unsigned short)unknownBlockID;
 
-                    // unknownBlockID can be a full 0-4095 type now (not just 0-511 via a single
-                    // promotion bit) - pack its bits 8-11 into the type-extension nibble directly.
+                    // Unknown replacements also store a full type independently from state.
                     paletteDataEntry[entryIndex] = PACK_TYPE_EXT_AND_DATAVAL(unknownBlockID, 0);
                     returnCode |= NBT_WARNING_NAME_NOT_FOUND;
                 }
@@ -5381,9 +5713,8 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
 
 #ifdef _DEBUG
                         else {
-                            // unknown property - look at token and value
-                            static int ignore = 0;
-                            assert(ignore);
+                            // unknown property - checked below
+                            strcpy_s(unknownProperty, sizeof(unknownProperty), token);
                         }
 #endif
                     }
@@ -5392,6 +5723,14 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
             else if (skipType(pbf, type) < 0)
                 return LINE_ERROR;
         }
+#ifdef _DEBUG
+        {
+            // a property Mineways doesn't know, of a Minecraft block it does - look at entryName and unknownProperty. A block from a mod has
+            // properties of its own, which are ignored along with it.
+            static int ignore = 0;
+            assert(ignore || unknownProperty[0] == 0 || !useData || strncmp(entryName, "minecraft:", 10) != 0);
+        }
+#endif
         // done, so determine and fold in dataVal
         int tf = BlockTranslations[typeIndex].translateFlags;
         if (useData) {
@@ -6104,12 +6443,8 @@ static int readPalette(int& returnCode, bfFile* pbf, int mcVersion, unsigned cha
             // always check for waterlogged
             dataVal |= (waterlogged ? WATERLOGGED_BIT : 0x0);
 
-            // dataVal (local) only ever occupies bits 0-7 (the PROP arms above); OR-ing it into
-            // paletteDataEntry[entryIndex] here only touches the low 12 (dataVal) bits, leaving
-            // the type-extension nibble (bits 12-15, set above from BlockTranslations[]/
-            // unknownBlockID) untouched. A PROP arm can freely use bits up to 0x800 (bit 11) for
-            // new properties - that no longer collides with type promotion the way bit 0x80 once did.
-            paletteDataEntry[entryIndex] |= dataVal;
+            // Only real state bits belong in the independent state field.
+            paletteDataEntry[entryIndex] |= (unsigned short)(dataVal & DATAVAL_MASK);
         }
         // ugh, need to clear this out each time, whether it's used or not.
         pmc = 0;
@@ -6204,7 +6539,7 @@ SectionsCode:
 
         int paletteLength = 0;
         // could theoretically get higher...
-        unsigned char paletteBlockEntry[MAX_PALETTE];
+        unsigned short paletteBlockEntry[MAX_PALETTE];
         unsigned short paletteDataEntry[MAX_PALETTE];
         for (;;)
         {
@@ -6514,10 +6849,43 @@ int nbtGetPlayer(bfFile* pbf, int* px, int* py, int* pz)
     *pz = (int)readDouble(pbf);
     return 0;
 }
-int nbtGetDimension(bfFile * pbf, int* dimension)
+static int readDimensionValue(bfFile* pbf, int tag, int* dimension, char* dimensionId, size_t capacity)
+{
+    std::string name;
+    if (tag == 8) {
+        unsigned char size[2];
+        if (bfread(pbf, size, 2) < 0) return LINE_ERROR;
+        int length = (size[0] << 8) | size[1];
+        if (length <= 0 || length > 255) return LINE_ERROR;
+        name.resize(length);
+        if (bfread(pbf, &name[0], length) < 0) return LINE_ERROR;
+        std::string canonical;
+        if (!CanonicalModState(name, canonical) || canonical != name || name.find('[') != std::string::npos) return LINE_ERROR;
+    }
+    else if (tag == 3) {
+        unsigned char bytes[4];
+        if (bfread(pbf, bytes, 4) < 0) return LINE_ERROR;
+        const uint32_t value = ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) | ((uint32_t)bytes[2] << 8) | bytes[3];
+        if (value == 0) name = "minecraft:overworld";
+        else if (value == UINT32_MAX) name = "minecraft:the_nether";
+        else if (value == 1) name = "minecraft:the_end";
+        else return LINE_ERROR;
+    }
+    else return LINE_ERROR;
+    if (dimensionId) {
+        if (name.size() >= capacity) return LINE_ERROR;
+        memcpy(dimensionId, name.c_str(), name.size() + 1);
+    }
+    *dimension = name == "minecraft:the_nether" ? 1 : name == "minecraft:the_end" ? 2 : 0;
+    return 0;
+}
+
+int nbtGetDimension(bfFile * pbf, int* dimension, char* dimensionId, size_t capacity)
 {
     int len;
+    if (!dimension) return LINE_ERROR;
     *dimension = 0; // overworld
+    if (dimensionId && capacity) dimensionId[0] = 0;
     //Data/Player/Dimension
     if (bfseek(pbf, 1, SEEK_CUR) < 0)
         return LINE_ERROR; //skip type
@@ -6528,21 +6896,7 @@ int nbtGetDimension(bfFile * pbf, int* dimension)
         return LINE_ERROR;
     if (nbtFindElement(pbf, "Player") != 10)
         return LINE_ERROR;
-    if (nbtFindElement(pbf, "Dimension") != 8)
-        return LINE_ERROR;
-    len = readWord(pbf);
-    char dimension_string[256];
-    if (len >= (int)sizeof(dimension_string))
-        return LINE_ERROR;
-    if (bfread(pbf, dimension_string, len) < 0)
-        return LINE_ERROR;
-    // doesn't return a null-terminated string, so add one
-    dimension_string[len] = 0;
-    if (strstr(dimension_string, "nether") != NULL)
-        *dimension = 1;
-    else if (strstr(dimension_string, "end") != NULL)
-        *dimension = 2;
-    return 0;
+    return readDimensionValue(pbf, nbtFindElement(pbf, "Dimension"), dimension, dimensionId, capacity);
 }
 // For newer worlds (26.1+), Pos is directly in the player .dat file, not under Data/Player
 int nbtGetPlayerDirect(bfFile* pbf, int* px, int* py, int* pz)
@@ -6565,33 +6919,20 @@ int nbtGetPlayerDirect(bfFile* pbf, int* px, int* py, int* pz)
     return 0;
 }
 // For newer worlds (26.1+), Dimension is directly in the player .dat file
-int nbtGetDimensionDirect(bfFile* pbf, int* dimension)
+int nbtGetDimensionDirect(bfFile* pbf, int* dimension, char* dimensionId, size_t capacity)
 {
     int len;
+    if (!dimension) return LINE_ERROR;
     *dimension = 0; // overworld
+    if (dimensionId && capacity) dimensionId[0] = 0;
     //Dimension (directly in root compound)
     if (bfseek(pbf, 1, SEEK_CUR) < 0)
         return LINE_ERROR; //skip type
     len = readWord(pbf); //name length
     if (bfseek(pbf, len, SEEK_CUR) < 0)
         return LINE_ERROR; //skip name ()
-    if (nbtFindElement(pbf, "Dimension") != 8)
-        return LINE_ERROR;
-    len = readWord(pbf);
-    char dimension_string[256];
-    if (len >= (int)sizeof(dimension_string))
-        return LINE_ERROR;
-    if (bfread(pbf, dimension_string, len) < 0)
-        return LINE_ERROR;
-    // doesn't return a null-terminated string, so add one
-    dimension_string[len] = 0;
-    if (strstr(dimension_string, "nether") != NULL)
-        *dimension = 1;
-    else if (strstr(dimension_string, "end") != NULL)
-        *dimension = 2;
-    return 0;
+    return readDimensionValue(pbf, nbtFindElement(pbf, "Dimension"), dimension, dimensionId, capacity);
 }
-
 //////////// schematic
 //  http://minecraft.wiki/w/Schematic_file_format
 // return 0 if not found, 1 if all is well
@@ -6623,14 +6964,14 @@ bool nbtGetValidatedSchematicVolume(int width, int height, int length, int* numB
     if (widthHeight > INT_MAX / length)
         return false;
     int volume = widthHeight * length;
-    if ((size_t)volume > SCHEMATIC_BLOCK_DATA_MEMORY_BUDGET / 2)
+    if ((size_t)volume > SCHEMATIC_BLOCK_DATA_MEMORY_BUDGET / (2 * sizeof(unsigned short)))
         return false;
     *numBlocks = volume;
     return true;
 }
 
 // return 1 on success
-int nbtGetSchematicBlocksAndData(bfFile* pbf, int numBlocks, unsigned char* schematicBlocks, unsigned short* schematicBlockData)
+int nbtGetSchematicBlocksAndData(bfFile* pbf, int numBlocks, unsigned short* schematicBlocks, unsigned short* schematicBlockData)
 {
     if (numBlocks <= 0 || schematicBlocks == NULL || schematicBlockData == NULL)
         return LINE_ERROR;
@@ -6659,22 +7000,13 @@ int nbtGetSchematicBlocksAndData(bfFile* pbf, int numBlocks, unsigned char* sche
                 !skipReadDword(pbf, &arrayLength) || arrayLength != (unsigned int)numBlocks)
                 return LINE_ERROR;
             if (isBlocks) {
-                if (bfread(pbf, schematicBlocks, numBlocks) != numBlocks)
+                if (!readByteValues(pbf, schematicBlocks, numBlocks))
                     return LINE_ERROR;
                 haveBlocks = true;
             }
             else {
-                // Legacy Data bytes are dataVal only, not packed type-extension bits.
-                unsigned char* rawData = (unsigned char*)malloc((size_t)numBlocks);
-                if (rawData == NULL)
+                if (!readByteValues(pbf, schematicBlockData, numBlocks))
                     return LINE_ERROR;
-                if (bfread(pbf, rawData, numBlocks) != numBlocks) {
-                    free(rawData);
-                    return LINE_ERROR;
-                }
-                for (int i = 0; i < numBlocks; i++)
-                    schematicBlockData[i] = rawData[i];
-                free(rawData);
                 haveData = true;
             }
         }
@@ -6765,11 +7097,19 @@ static int spongeParsePropList(char* propsBuf, char** keys, char** values, int m
 // Parse a Sponge palette state-string like "minecraft:oak_log[axis=y,waterlogged=false]" into a
 // Mineways (blockId, dataVal) pair, inverting `spongeBuildBlockStateString`. Returns true if the
 // block name was recognised. On unknown blocks emits BLOCK_AIR and returns false. (issue #40)
-// Returns the full type (0-4095) in *outType and the 12-bit dataVal in *outDataVal.
-static bool spongeParseStateString(const char* str, int* outType, int* outDataVal)
+// Returns the full type (0-65535) in *outType and the 12-bit dataVal in *outDataVal.
+static bool spongeParseStateString(const char* str, int* outType, int* outDataVal, int* modStatus = NULL)
 {
     *outType = 0;
     *outDataVal = 0;
+    if (modStatus) *modStatus = 0;
+    if (ModPackLoaded()) {
+        const int modResult = ResolveModState(str, outType, outDataVal);
+        if (modStatus) *modStatus = modResult;
+        if (modResult != 0) return modResult > 0;
+        const std::string stateName(str);
+        if (HasModBlock(stateName.substr(0, stateName.find('[')))) return false;
+    }
 
     // Copy to a mutable buffer for in-place tokenization.
     char buf[256];
@@ -7877,7 +8217,7 @@ static bool spongeImportFitsMemoryBudget(int numBlocks, int paletteCapacity, int
 {
     if (numBlocks <= 0 || paletteCapacity < 0 || dataBytesLen < 0)
         return false;
-    size_t total = 2 * (size_t)numBlocks;
+    size_t total = 2 * sizeof(unsigned short) * (size_t)numBlocks;
     if (total > SPONGE_IMPORT_MEMORY_BUDGET)
         return false;
     size_t paletteBytes = 2 * (size_t)paletteCapacity * sizeof(int);
@@ -7899,7 +8239,8 @@ static bool spongeDataLengthIsValid(int len, int numBlocks, int paletteCapacity)
 static bool spongeReadDataArray(bfFile* pbf, unsigned char** outDataBytes,
     int* outDataBytesLen, int numBlocks, int paletteCapacity)
 {
-    int len = (int)readDword(pbf);
+    int len;
+    if (!modNbtInt(pbf, len)) return false;
     if (!spongeDataLengthIsValid(len, numBlocks, paletteCapacity))
         return false;
     if (*outDataBytes) {
@@ -7935,9 +8276,9 @@ static bool spongeReadPalette(bfFile* pbf,
         if (bfread(pbf, &ptype, 1) < 0) return false;
         if (ptype == 0) return true;    // TAG_End — done
 
-        unsigned int pnameLen = readWord(pbf);
-        if (pnameLen >= 256) return false;
-        char pname[256];
+        unsigned short pnameLen;
+        if (!skipReadWord(pbf, &pnameLen) || pnameLen >= 1024) return false;
+        char pname[1024];
         if (bfread(pbf, pname, (int)pnameLen) < 0) return false;
         pname[pnameLen] = '\0';
 
@@ -7946,7 +8287,8 @@ static bool spongeReadPalette(bfFile* pbf,
             if (skipType(pbf, ptype) < 0) return false;
             continue;
         }
-        int idx = (int)readDword(pbf);
+        int idx;
+        if (!modNbtInt(pbf, idx)) return false;
         if (idx < 0 || idx >= maxPaletteEntries) {
             return false;
         }
@@ -7975,14 +8317,16 @@ static bool spongeReadPalette(bfFile* pbf,
             *palCapacity = newCap;
         }
         int type, dataVal;
-        spongeParseStateString(pname, &type, &dataVal);
+        int modStatus;
+        if (!spongeParseStateString(pname, &type, &dataVal, &modStatus) && modStatus < 0)
+            return false;
         (*palBlockIds)[idx] = type;
         (*palDataVals)[idx] = dataVal;
         if (idx + 1 > *palCount) *palCount = idx + 1;
     }
 }
 
-// Walk the "Blocks" sub-compound (Sponge v3). Reads Palette + Data + (skips) BlockEntities.
+// Walk the "Blocks" sub-compound (Sponge v3). Defer BlockEntities until voxels are decoded.
 // On success, returns true and sets:
 //   *outDataBytes -> malloc'd buffer with the varint stream
 //   *outDataBytesLen -> length in bytes
@@ -7990,15 +8334,15 @@ static bool spongeReadPalette(bfFile* pbf,
 // Caller is responsible for freeing *outDataBytes.
 static bool spongeReadBlocksCompound(bfFile* pbf,
     int** palBlockIds, int** palDataVals, int* palCapacity, int* palCount,
-    unsigned char** outDataBytes, int* outDataBytesLen, int numBlocks)
+    unsigned char** outDataBytes, int* outDataBytesLen, int numBlocks, int* entitiesOffset)
 {
     for (;;) {
         unsigned char type = 0;
         if (bfread(pbf, &type, 1) < 0) return false;
         if (type == 0) return true;     // TAG_End — done with Blocks compound
 
-        unsigned int nameLen = readWord(pbf);
-        if (nameLen >= 64) return false;
+        unsigned short nameLen;
+        if (!skipReadWord(pbf, &nameLen) || nameLen >= 64) return false;
         char tname[64];
         if (bfread(pbf, tname, (int)nameLen) < 0) return false;
         tname[nameLen] = '\0';
@@ -8015,6 +8359,11 @@ static bool spongeReadBlocksCompound(bfFile* pbf,
                 return false;
             }
         }
+        else if (strcmp(tname, "BlockEntities") == 0 && ModPackLoaded()) {
+            if (type != 9 || *entitiesOffset >= 0) return false;
+            *entitiesOffset = bftell(pbf);
+            if (*entitiesOffset < 0 || skipType(pbf, type) < 0) return false;
+        }
         else {
             // BlockEntities, or anything else we don't currently consume
             if (skipType(pbf, type) < 0) return false;
@@ -8024,7 +8373,7 @@ static bool spongeReadBlocksCompound(bfFile* pbf,
 
 int nbtGetSpongeSchematic(bfFile* pbf,
     int* outWidth, int* outHeight, int* outLength,
-    unsigned char** outBlocks, unsigned short** outData, int* outDataVersion)
+    unsigned short** outBlocks, unsigned short** outData, int* outDataVersion)
 {
     *outBlocks = NULL;
     *outData = NULL;
@@ -8065,7 +8414,8 @@ int nbtGetSpongeSchematic(bfFile* pbf,
     unsigned char rootType = 0;
     if (bfread(pbf, &rootType, 1) < 0) SPONGE_FAIL();
     if (rootType != 0x0A) SPONGE_FAIL();
-    unsigned int rootNameLen = readWord(pbf);
+    unsigned short rootNameLen;
+    if (!skipReadWord(pbf, &rootNameLen)) SPONGE_FAIL();
     char rootName[16] = { 0 };
     if (rootNameLen > 0) {
         if (rootNameLen < sizeof(rootName)) {
@@ -8092,6 +8442,7 @@ int nbtGetSpongeSchematic(bfFile* pbf,
     int deferredBlocksOffset = -1;
     int deferredPaletteOffset = -1;
     int deferredBlockDataOffset = -1;
+    int entitiesOffset = -1;
 
     // Walk children of the Schematic compound. Allocation-heavy fields that precede the
     // dimensions are skipped now and revisited once their volume-based limits are known.
@@ -8100,27 +8451,33 @@ int nbtGetSpongeSchematic(bfFile* pbf,
         if (bfread(pbf, &type, 1) < 0) SPONGE_FAIL();
         if (type == 0) break;    // TAG_End — done with Schematic compound
 
-        unsigned int nameLen = readWord(pbf);
-        if (nameLen >= 64) SPONGE_FAIL();
+        unsigned short nameLen;
+        if (!skipReadWord(pbf, &nameLen) || nameLen >= 64) SPONGE_FAIL();
         char tname[64];
         if (bfread(pbf, tname, (int)nameLen) < 0) SPONGE_FAIL();
         tname[nameLen] = '\0';
 
         if (strcmp(tname, "Width") == 0 && type == 0x02) {
-            width = (short)readWord(pbf);
+            unsigned short value;
+            if (!skipReadWord(pbf, &value)) SPONGE_FAIL();
+            width = (short)value;
             haveWidth = true;
         }
         else if (strcmp(tname, "Height") == 0 && type == 0x02) {
-            height = (short)readWord(pbf);
+            unsigned short value;
+            if (!skipReadWord(pbf, &value)) SPONGE_FAIL();
+            height = (short)value;
             haveHeight = true;
         }
         else if (strcmp(tname, "Length") == 0 && type == 0x02) {
-            length = (short)readWord(pbf);
+            unsigned short value;
+            if (!skipReadWord(pbf, &value)) SPONGE_FAIL();
+            length = (short)value;
             haveLength = true;
         }
         else if (strcmp(tname, "DataVersion") == 0 && type == 0x03) {
             // the Minecraft version the block states are from, https://minecraft.wiki/w/Data_version
-            *outDataVersion = readInt(pbf);
+            if (!modNbtInt(pbf, *outDataVersion)) SPONGE_FAIL();
         }
         else if (strcmp(tname, "Blocks") == 0 && type == 0x0A) {
             // v3: Palette + Data nested under a "Blocks" compound.
@@ -8133,7 +8490,7 @@ int nbtGetSpongeSchematic(bfFile* pbf,
                     !spongeImportFitsMemoryBudget(numBlocks, palCapacity, dataBytesLen) ||
                     !spongeReadBlocksCompound(pbf,
                         &palBlockIds, &palDataVals, &palCapacity, &palCount,
-                        &dataBytes, &dataBytesLen, numBlocks)) {
+                        &dataBytes, &dataBytesLen, numBlocks, &entitiesOffset)) {
                     SPONGE_FAIL();
                 }
                 sawBlocks = true;
@@ -8168,6 +8525,11 @@ int nbtGetSpongeSchematic(bfFile* pbf,
                 }
             }
         }
+        else if (isV2 && strcmp(tname, "BlockEntities") == 0 && ModPackLoaded()) {
+            if (type != 9 || entitiesOffset >= 0) SPONGE_FAIL();
+            entitiesOffset = bftell(pbf);
+            if (entitiesOffset < 0 || skipType(pbf, type) < 0) SPONGE_FAIL();
+        }
         else {
             // Version, Offset, Metadata, PaletteMax, Biomes, Entities,
             // BlockEntities (v2 top-level) … — all skipped for now.
@@ -8175,12 +8537,16 @@ int nbtGetSpongeSchematic(bfFile* pbf,
         }
     }
 
+    // v3 has an additional outer root compound. Validate its closing tag before
+    // seeking back to deferred fields, so an incomplete file cannot look complete.
+    if (!isV2 && skipType(pbf, 10) < 0) SPONGE_FAIL();
+
     if (!nbtGetValidatedSchematicVolume(width, height, length, &numBlocks)) SPONGE_FAIL();
     if (deferredBlocksOffset >= 0) {
         if (bfseek(pbf, deferredBlocksOffset, SEEK_SET) < 0 ||
             !spongeReadBlocksCompound(pbf,
                 &palBlockIds, &palDataVals, &palCapacity, &palCount,
-                &dataBytes, &dataBytesLen, numBlocks)) {
+                &dataBytes, &dataBytesLen, numBlocks, &entitiesOffset)) {
             SPONGE_FAIL();
         }
         sawBlocks = true;
@@ -8204,7 +8570,7 @@ int nbtGetSpongeSchematic(bfFile* pbf,
     if (dataBytes == NULL || palCount == 0) SPONGE_FAIL();
     if (!spongeImportFitsMemoryBudget(numBlocks, palCapacity, dataBytesLen)) SPONGE_FAIL();
 
-    *outBlocks = (unsigned char*)malloc((size_t)numBlocks);
+    *outBlocks = (unsigned short*)malloc((size_t)numBlocks * sizeof(unsigned short));
     *outData = (unsigned short*)malloc((size_t)numBlocks * sizeof(unsigned short));
     if (*outBlocks == NULL || *outData == NULL)
         SPONGE_FAIL();
@@ -8214,17 +8580,20 @@ int nbtGetSpongeSchematic(bfFile* pbf,
     // `(y * length + z) * width + x`, the same loop expressed differently. No reordering needed.
     //
     // palBlockIds[idx] holds the full type and palDataVals[idx] the 12-bit dataVal (see spongeParseStateString);
-    // pack them into *outBlocks (the type's low 8 bits) and *outData's wide form (12-bit dataVal + 4-bit
-    // type-extension nibble), the same format nbtGetBlocks produces for its palette.
+    // Store the complete type and independent state without truncating either field.
     int pos = 0;
     for (int i = 0; i < numBlocks; i++) {
         unsigned int idx;
         if (!spongeReadVarint(dataBytes, &pos, dataBytesLen, &idx) || idx >= (unsigned int)palCount)
             SPONGE_FAIL();
         int fullType = palBlockIds[idx];
-        (*outBlocks)[i] = (unsigned char)(fullType & 0xFF);
+        (*outBlocks)[i] = (unsigned short)fullType;
         (*outData)[i] = PACK_TYPE_EXT_AND_DATAVAL(fullType, palDataVals[idx]);
     }
+
+    if (entitiesOffset >= 0 &&
+        (bfseek(pbf, entitiesOffset, SEEK_SET) < 0 ||
+            !modReadEntityList(pbf, isV2 ? 1 : 2, *outBlocks, *outData, width, height, length, 0, 0, 0))) SPONGE_FAIL();
 
     free(palBlockIds);
     free(palDataVals);
@@ -8275,7 +8644,7 @@ static void buildSpongeReverseIndex()
 // subtype match. Falls back to the first registered entry for the type if no exact match.
 static const BlockTranslator* findSpongeTranslator(int type, int dataVal)
 {
-    int fullType = type & 0xFFF;
+    int fullType = type & 0xFFFF;
     if (fullType <= 0 || fullType >= NUM_BLOCKS_DEFINED) {
         return (fullType == 0 && gSpongeReverseCount[0] > 0) ? gSpongeReverse[0][0] : NULL;
     }
@@ -8443,7 +8812,7 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // emits the default `axis=y` — correct, since a `_wood` block has the same texture on every face.
     if ((dataVal & 0xC) == 0xC) {
         int subtype = dataVal & 0x3;
-        switch (type & 0xFFF) {
+        switch (type & 0xFFFF) {
         case BLOCK_LOG:                 // BlockTranslations: blockId 17, dataVal=BIT_16|subtype → oak/spruce/birch/jungle_wood
         case BLOCK_AD_LOG:              // blockId 162, BIT_16|subtype → acacia/dark_oak_wood
         case BLOCK_MANGROVE_LOG:        // blockId 160 + TYPE_HIGH_BIT1, BIT_16 → mangrove_wood
@@ -8476,8 +8845,8 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // `minecraft:lava` with a `level` property to distinguish the two. BlockTranslations only
     // has entries for blockIds 9 and 11, so the flowing forms fell through to "minecraft:air".
     // Remap to the stationary ID; FLUID_PROP arm emits `level` from dataVal.
-    if ((type & 0xFFF) == BLOCK_WATER) type = BLOCK_STATIONARY_WATER;
-    else if ((type & 0xFFF) == BLOCK_LAVA) type = BLOCK_STATIONARY_LAVA;
+    if ((type & 0xFFFF) == BLOCK_WATER) type = BLOCK_STATIONARY_WATER;
+    else if ((type & 0xFFFF) == BLOCK_LAVA) type = BLOCK_STATIONARY_LAVA;
 
     // Burning-furnace fixup: lit furnace / smoker / blast_furnace all land under
     // BLOCK_BURNING_FURNACE (62) on the read side — see FURNACE_PROP arm in readPalette
@@ -8487,7 +8856,7 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // BLOCK_FURNACE (61) — which has "furnace" / "loom" / "smoker" / "blast_furnace" entries
     // distinguished by BIT_16 / BIT_32 in dataVal — and emit `lit=true` in the FURNACE_PROP arm.
     r.isLitFurnace = false;
-    if ((type & 0xFFF) == BLOCK_BURNING_FURNACE) {
+    if ((type & 0xFFFF) == BLOCK_BURNING_FURNACE) {
         type = BLOCK_FURNACE;
         r.isLitFurnace = true;
     }
@@ -8497,10 +8866,10 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // ("redstone_ore" at 73, "redstone_lamp" at 123) are in BlockTranslations; the lit ones
     // (74, 124) are not, so they fell to "minecraft:air". Remap and emit `lit=true` below.
     r.isLitRedstoneOre = false;
-    if ((type & 0xFFF) == BLOCK_GLOWING_REDSTONE_ORE) {
+    if ((type & 0xFFFF) == BLOCK_GLOWING_REDSTONE_ORE) {
         type = BLOCK_REDSTONE_ORE;
         r.isLitRedstoneOre = true;
-    } else if ((type & 0xFFF) == 124) {  // lit redstone_lamp; no named constant in blockInfo.h
+    } else if ((type & 0xFFFF) == 124) {  // lit redstone_lamp; no named constant in blockInfo.h
         type = 123;                       // unlit redstone_lamp
         r.isLitRedstoneOre = true;
     }
@@ -8510,10 +8879,10 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // no BlockTranslations entries. Remap to their unlit twins so the right palette entry is
     // chosen, then emit `lit=true` in the CANDLE_PROP arm.
     r.isLitCandle = false;
-    if ((type & 0xFFF) == BLOCK_LIT_CANDLE) {
+    if ((type & 0xFFFF) == BLOCK_LIT_CANDLE) {
         type = BLOCK_CANDLE;
         r.isLitCandle = true;
-    } else if ((type & 0xFFF) == BLOCK_LIT_COLORED_CANDLE) {
+    } else if ((type & 0xFFFF) == BLOCK_LIT_COLORED_CANDLE) {
         type = BLOCK_COLORED_CANDLE;
         r.isLitCandle = true;
     }
@@ -8523,8 +8892,8 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // "redstone_torch" / "redstone_wall_torch" entries only under blockId 76, so without
     // this remap unlit torches fell through to "minecraft:air". Remap 75 -> 76 so the lookup
     // hits the TORCH_PROP entry; the lit/unlit decision is made from `origType` in the arm.
-    if ((type & 0xFFF) == BLOCK_REDSTONE_TORCH_OFF) {
-        type = (type & ~0xFFF) | BLOCK_REDSTONE_TORCH_ON;
+    if ((type & 0xFFFF) == BLOCK_REDSTONE_TORCH_OFF) {
+        type = (type & ~0xFFFF) | BLOCK_REDSTONE_TORCH_ON;
     }
 
     // Redstone-repeater powered-fixup: Mineways shifts the block ID by +1 when the repeater
@@ -8533,8 +8902,8 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // remap the powered form fell through to "minecraft:air". Remap 94 -> 93 so the lookup
     // hits the REPEATER_PROP entry, and let that arm emit `powered=true` via this flag.
     r.isPoweredRepeater = false;
-    if ((type & 0xFFF) == BLOCK_REDSTONE_REPEATER_ON) {
-        type = (type & ~0xFFF) | BLOCK_REDSTONE_REPEATER_OFF;
+    if ((type & 0xFFFF) == BLOCK_REDSTONE_REPEATER_ON) {
+        type = (type & ~0xFFFF) | BLOCK_REDSTONE_REPEATER_OFF;
         r.isPoweredRepeater = true;
     }
 
@@ -8543,8 +8912,8 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // "comparator" row under blockId 149, so the deprecated form fell through to "minecraft:air".
     // Modern Minecraft has a single `minecraft:comparator` with `powered=true|false`. Remap to
     // 149 and force the `powered` bit on so the COMPARATOR_PROP arm emits `powered=true`.
-    if ((type & 0xFFF) == BLOCK_REDSTONE_COMPARATOR_DEPRECATED) {
-        type = (type & ~0xFFF) | BLOCK_REDSTONE_COMPARATOR;
+    if ((type & 0xFFFF) == BLOCK_REDSTONE_COMPARATOR_DEPRECATED) {
+        type = (type & ~0xFFFF) | BLOCK_REDSTONE_COMPARATOR;
         dataVal |= 0x8;
     }
 
@@ -8554,8 +8923,8 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // BlockTranslations only has "daylight_detector" under 151, so 178 fell through to
     // "minecraft:air". Remap to 151 and let the DAYLIGHT_PROP arm emit `inverted=true`.
     r.isInvertedDaylightDetector = false;
-    if ((type & 0xFFF) == BLOCK_DAYLIGHT_DETECTOR) {
-        type = (type & ~0xFFF) | BLOCK_DAYLIGHT_SENSOR;
+    if ((type & 0xFFFF) == BLOCK_DAYLIGHT_DETECTOR) {
+        type = (type & ~0xFFFF) | BLOCK_DAYLIGHT_SENSOR;
         r.isInvertedDaylightDetector = true;
     }
 
@@ -8564,7 +8933,7 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // has no 405 entry, so without a remap the berry-bearing cave vines would drop to air.
     // Remap to BLOCK_CAVE_VINES (404) and emit berries=true below.
     r.isBerriesLit = false;
-    if ((type & 0xFFF) == BLOCK_CAVE_VINES_LIT) {
+    if ((type & 0xFFFF) == BLOCK_CAVE_VINES_LIT) {
         type = BLOCK_CAVE_VINES;
         r.isBerriesLit = true;
     }
@@ -8575,7 +8944,7 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // BLOCK_*_DOUBLE_SLAB IDs, so without this remap they fall through to "minecraft:air"
     // (silently dropped by WorldEdit). Remap to the single slab and emit `type=double` below.
     r.isDoubleSlab = false;
-    switch (type & 0xFFF) {
+    switch (type & 0xFFFF) {
     case BLOCK_STONE_DOUBLE_SLAB:           // 43 → 44 (smooth_stone_slab/sandstone_slab/...)
     case BLOCK_WOODEN_DOUBLE_SLAB:          // 125 → 126 (oak_slab/spruce_slab/...)
     case BLOCK_RED_SANDSTONE_DOUBLE_SLAB:   // 181 → 182
@@ -8596,7 +8965,7 @@ static SpongeLookupRemap remapForSpongeLookup(int type, int dataVal)
     // renderer treats lit and unlit as different materials).
     // Strip the lit bit just for the lookup; the BULB_PROP arm still reads it from `dataVal`.
     int lookupDataVal = dataVal;
-    if ((type & 0xFFF) == BLOCK_COPPER_BULB) {
+    if ((type & 0xFFFF) == BLOCK_COPPER_BULB) {
         lookupDataVal &= ~0x8;
     }
 
@@ -8621,6 +8990,7 @@ bool blockTransNameAt(int idx, const char** outName)
 
 int blockTransIndexFor(int type, int dataVal)
 {
+    if (type < 0 || type >= NUM_BLOCKS_DEFINED) return -1;
     // Lazy-init the reverse index the same way spongeBuildBlockStateString does — running
     // this from the Culling render hook before any .schem export has otherwise initialized it.
     buildSpongeReverseIndex();
@@ -8642,12 +9012,18 @@ int blockTransIndexFor(int type, int dataVal)
 int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
 {
     if (out == NULL || outSize <= 0) return -1;
+    if (IsModBlock(type)) {
+        const ModBlockState* state = GetModBlock(type, dataVal);
+        if (!state || state->canonical.size() >= (size_t)outSize) return -1;
+        memcpy(out, state->canonical.c_str(), state->canonical.size() + 1);
+        return (int)state->canonical.size();
+    }
     buildSpongeReverseIndex();
 
     // Capture the caller's original block id before any of the remaps below rewrite it. A few
     // property arms (TORCH_PROP for the unlit redstone-torch case) want to consult the original
     // identity even after the remap has folded 75 onto 76 to satisfy the palette lookup.
-    int origType = type & 0xFFF;
+    int origType = type & 0xFFFF;
 
     SpongeLookupRemap r = remapForSpongeLookup(type, dataVal);
     type = r.type;
@@ -8670,7 +9046,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
     // and a growing melon stem's age falls back to the first entry, attached_melon_stem), so pick it from dataVal.
     {
         const char* want = NULL;
-        switch (type & 0xFFF) {
+        switch (type & 0xFFFF) {
         case BLOCK_KELP:            want = (dataVal & 0x1) ? "minecraft:kelp" : "minecraft:kelp_plant"; break;
         case BLOCK_CAMPFIRE:        want = (dataVal & 0x8) ? "minecraft:soul_campfire" : "minecraft:campfire"; break;
         case BLOCK_MELON_STEM:      want = (dataVal & 0x8) ? "minecraft:attached_melon_stem" : "minecraft:melon_stem"; break;
@@ -8780,7 +9156,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
         // "extended" - read in by the "type" token parser (readPalette / spongeParseStateString),
         // which sets `sticky` to 8 or 0, but until now never written back out here, so it was
         // silently dropped on .schem export (piston_head always came back "normal").
-        int fullType = type & 0xFFF;
+        int fullType = type & 0xFFFF;
         bool isPiston = (fullType == BLOCK_PISTON || fullType == BLOCK_STICKY_PISTON);
         bool isPistonHead = (fullType == BLOCK_PISTON_HEAD);
         bool isCommandBlock = (fullType == BLOCK_COMMAND_BLOCK || fullType == BLOCK_REPEATING_COMMAND_BLOCK || fullType == BLOCK_CHAIN_COMMAND_BLOCK);
@@ -8843,7 +9219,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
         //   lectern: has_book 0x4, powered 0x8
         //   campfire, soul_campfire: lit 0x4, soul 0x8 (the name), signal_fire 0x10
         //   bee_nest, beehive: honey_level 0x1C, beehive 0x20 (the name)
-        int t = type & 0xFFF;
+        int t = type & 0xFFFF;
         const char* facing = spongeDoorFacingFromDataVal(dataVal);
         if (t == BLOCK_GRINDSTONE) {
             static const char* faces[4] = { "floor", "wall", "ceiling", "floor" };
@@ -9035,7 +9411,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
         char ageStr[3];
         snprintf(ageStr, sizeof(ageStr), "%d", dataVal & 0xF);
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "age", ageStr);
-        if ((type & 0xFFF) == BLOCK_FIRE && !(dataVal & BIT_16)) {
+        if ((type & 0xFFFF) == BLOCK_FIRE && !(dataVal & BIT_16)) {
             // the sides fire burns on (soul fire has none): up 0x20, north 0x80, east 0x100, south 0x200, west 0x400
             spongeAppendProp(props, (int)sizeof(props), &plen, &started, "east", (dataVal & 0x100) ? "true" : "false");
             spongeAppendProp(props, (int)sizeof(props), &plen, &started, "north", (dataVal & 0x80) ? "true" : "false");
@@ -9792,7 +10168,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
         // copper variants exported as plain `torch` / `wall_torch`.
         int facing = dataVal & 0x7;
         bool isWall = (facing >= 1 && facing <= 4);
-        int fullType = type & 0xFFF;
+        int fullType = type & 0xFFFF;
         bool isRedstone = (fullType == BLOCK_REDSTONE_TORCH_OFF || fullType == BLOCK_REDSTONE_TORCH_ON);
         if (isRedstone) {
             name = isWall ? "redstone_wall_torch" : "redstone_torch";
@@ -9903,7 +10279,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
     // 2=waiting_for_players, 3=ejecting_reward). Emit them so the export round-trips.
     // Alphabetical: ominous < trial_spawner_state.
     // Bit 0x8 marks the two states drawn like another: cooldown (as inactive) and waiting_for_reward_ejection (as active).
-    if ((type & 0xFFF) == BLOCK_TRIAL_SPAWNER) {
+    if ((type & 0xFFFF) == BLOCK_TRIAL_SPAWNER) {
         const char* state;
         switch (dataVal & 0x3) {
         default:
@@ -9921,7 +10297,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
     {
         const char* key = NULL;
         int value = 0;
-        switch (type & 0xFFF) {
+        switch (type & 0xFFFF) {
         case BLOCK_CARROTS:
         case BLOCK_POTATOES:
         case BLOCK_CHORUS_FLOWER:     key = "age"; value = dataVal & 0x7; break;
@@ -9956,7 +10332,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
     // (0=north, 1=east, 2=south, 3=west), ominous into bit 0x4 and vault_state into bits 0x18 (index << 3):
     // 0=inactive, 1=active, 2=unlocking, 3=ejecting. The MinewaysMap.cpp color switch (case BLOCK_VAULT,
     // mask 0x1C) confirms this layout. Alphabetical: facing < ominous < vault_state.
-    if ((type & 0xFFF) == BLOCK_VAULT) {
+    if ((type & 0xFFFF) == BLOCK_VAULT) {
         static const char* vaultFacing[4] = { "north", "east", "south", "west" };
         const char* state;
         switch ((dataVal >> 3) & 0x3) {
@@ -9974,7 +10350,7 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
     // BLOCK_BREWING_STAND (117) is NO_PROP, but the world reader packs the three bottle-slot
     // occupancy flags into dataVal bits 0x1/0x2/0x4 (see nbt.cpp:4051-4058). Emit them so the
     // bottle layout round-trips. Alphabetical: has_bottle_0 < has_bottle_1 < has_bottle_2.
-    if ((type & 0xFFF) == BLOCK_BREWING_STAND) {
+    if ((type & 0xFFFF) == BLOCK_BREWING_STAND) {
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "has_bottle_0", (dataVal & 0x1) ? "true" : "false");
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "has_bottle_1", (dataVal & 0x2) ? "true" : "false");
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "has_bottle_2", (dataVal & 0x4) ? "true" : "false");
@@ -9982,51 +10358,51 @@ int spongeBuildBlockStateString(int type, int dataVal, char* out, int outSize)
 
     // BLOCK_JUKEBOX (84) is NO_PROP; world reader at nbt.cpp:~4452 packs `has_record` into
     // bit 0x01. Non-graphical but preserved for .schem round-trip.
-    if ((type & 0xFFF) == BLOCK_JUKEBOX) {
+    if ((type & 0xFFFF) == BLOCK_JUKEBOX) {
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "has_record", (dataVal & 0x1) ? "true" : "false");
     }
 
     // BLOCK_TNT (46) is TRULY_NO_PROP; shares its blockId with "target" via bit 0x01 (0=tnt,
     // 1=target - see BlockTranslations). "unstable" only exists on the "tnt" block state, so only
     // emit it for the tnt subtype; bit 0x02 holds it (mirror of world reader).
-    if ((type & 0xFFF) == BLOCK_TNT && (dataVal & 0x1) == 0) {
+    if ((type & 0xFFFF) == BLOCK_TNT && (dataVal & 0x1) == 0) {
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "unstable", (dataVal & 0x2) ? "true" : "false");
     }
 
     // BLOCK_POTENT_SULFUR is NO_PROP; the world reader stores potent_sulfur_state, 0-4, in the low 3 bits.
-    if ((type & 0xFFF) == BLOCK_POTENT_SULFUR) {
+    if ((type & 0xFFFF) == BLOCK_POTENT_SULFUR) {
         static const char* sulfurStates[8] = { "dry", "wet", "dormant", "erupting", "continuous", "dry", "dry", "dry" };
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "potent_sulfur_state", sulfurStates[dataVal & 0x7]);
     }
 
     // BLOCK_AMETHYST's family holds deepslate_redstone_ore (subtype 40), whose "lit" is bit 0x80.
-    if ((type & 0xFFF) == BLOCK_AMETHYST && (dataVal & 0x3F) == 40) {
+    if ((type & 0xFFFF) == BLOCK_AMETHYST && (dataVal & 0x3F) == 40) {
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "lit", (dataVal & 0x80) ? "true" : "false");
     }
 
     // BLOCK_CRYING_OBSIDIAN (344) is NO_PROP; shares its blockId with "sculk_catalyst" via bit
     // 0x01 (0=crying_obsidian, 1=sculk_catalyst - see BlockTranslations). "bloom" only exists on
     // sculk_catalyst, so only emit it for that subtype; bit 0x02 holds it (mirror of world reader).
-    if ((type & 0xFFF) == BLOCK_CRYING_OBSIDIAN && (dataVal & 0x1) != 0) {
+    if ((type & 0xFFFF) == BLOCK_CRYING_OBSIDIAN && (dataVal & 0x1) != 0) {
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "bloom", (dataVal & 0x2) ? "true" : "false");
     }
 
     // BLOCK_STATIONARY_WATER (9) is NO_PROP; shares its blockId with plain "water" via bit 0x10
     // (0=water, 1=bubble_column - see BlockTranslations). "drag" only exists on bubble_column, so
     // only emit it for that subtype; bit 0x01 holds it (mirror of world reader).
-    if ((type & 0xFFF) == BLOCK_STATIONARY_WATER && (dataVal & 0x10) != 0) {
+    if ((type & 0xFFFF) == BLOCK_STATIONARY_WATER && (dataVal & 0x10) != 0) {
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "drag", (dataVal & 0x1) ? "true" : "false");
     }
 
     // BLOCK_PALE_HANGING_MOSS (358) is NO_PROP; world reader packs `tip` into bit 0x01. It changes the
     // texture used, and a missing `tip` means the default, tip=true, so it must always be written.
-    if ((type & 0xFFF) == BLOCK_PALE_HANGING_MOSS) {
+    if ((type & 0xFFFF) == BLOCK_PALE_HANGING_MOSS) {
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "tip", (dataVal & 0x1) ? "true" : "false");
     }
 
     // BLOCK_SCULK_SHRIEKER (433) is NO_PROP. World reader packs bit 0x01 = can_summon,
     // bit 0x02 = shrieking. Alphabetical: can_summon < shrieking.
-    if ((type & 0xFFF) == BLOCK_SCULK_SHRIEKER) {
+    if ((type & 0xFFFF) == BLOCK_SCULK_SHRIEKER) {
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "can_summon", (dataVal & 0x1) ? "true" : "false");
         spongeAppendProp(props, (int)sizeof(props), &plen, &started, "shrieking", (dataVal & 0x2) ? "true" : "false");
     }
